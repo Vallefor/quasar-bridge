@@ -107,6 +107,12 @@ clock questions, dialogue history, page reading, code requests, and an open
 local follow-up stay on their existing routes. The decision source is
 `unknown`. SIGHUP reloads the flag with the rest of routing.
 
+Ruling: a whole conversion request goes to Yandex through `unit_conversion`.
+It is a quantity, a currency or measurement unit, «в», and another currency
+or unit. Examples: «50 евро в рублях», «40 вон в долларах», «20 кг в граммах»,
+«1 метр в сантиметрах». A longer sentence is not this rule, and
+`unknown_to_home` does not redirect a matched conversion.
+
 Ruling: a whole playback command still stops music. That includes «Алиса,
 хватит», «хватит», «стоп», pause, and resume. An active local queue handles
 it; otherwise the `speaker_playback` rule sends it to Yandex. A longer
