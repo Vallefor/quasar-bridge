@@ -100,7 +100,8 @@ process restart.
 Ruling: `routing.unknown_to_home` defaults to false. When true, text that
 matches no rule goes to home without the classifier. Phrases that ask the
 neural net go to home even if a rule chose llm. Timer phrases that a rule
-would send to Yandex go to home, except «таймер на …», which stays on Yandex.
+would send to Yandex go to home, except «таймер на …» and a timer control
+such as resume, pause, cancel, or delete, which stay on Yandex.
 Alarm phrases stay on Yandex. An explicit home rule, weather, music,
 clock questions, dialogue history, page reading, code requests, and an open
 local follow-up stay on their existing routes. The decision source is

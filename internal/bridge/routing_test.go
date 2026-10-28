@@ -240,7 +240,11 @@ func TestUnknownToHome(t *testing.T) {
 		{"спроси у своей модели, который час", "home", "yandex_services", "unknown"},
 		{"поставь таймер на 10 секунд", "yandex", "yandex_services", "rule"},
 		{"таймер на пять минут", "yandex", "yandex_services", "rule"},
-		{"отмени таймер", "home", "yandex_services", "unknown"},
+		{"таймер на паузу", "yandex", "yandex_services", "rule"},
+		{"Продолжи таймер", "yandex", "yandex_services", "rule"},
+		{"Удали таймер", "yandex", "yandex_services", "rule"},
+		{"отмени таймер", "yandex", "yandex_services", "rule"},
+		{"что такое таймер", "home", "yandex_services", "unknown"},
 		{"поставь будильник на семь", "yandex", "yandex_services", "rule"},
 		{"сколько будет три плюс четыре", "home", "", "unknown"},
 	} {

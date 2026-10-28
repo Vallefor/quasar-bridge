@@ -225,8 +225,8 @@ func (p *RoutingPolicy) match(text string) (RouteDecision, bool) {
 
 // unknownHome redirects a matched rule when the house agent should own the phrase.
 // A rule that already chose home is left untouched. History, page reading,
-// alarms, and «таймер на …» stay on Yandex. Other timer words are redirected
-// only from the Yandex rule.
+// alarms, «таймер на …», and timer controls such as resume or delete stay on
+// Yandex. Other timer words are redirected only from the Yandex rule.
 func (p *RoutingPolicy) unknownHome(text string, matched RouteDecision) (RouteDecision, bool) {
 	if !p.unknownToHome || matched.Route == "home" {
 		return RouteDecision{}, false
@@ -252,10 +252,20 @@ func asksModel(text string) bool {
 }
 func timerPhrase(text string) bool {
 	s := foldedText(text)
-	if strings.Contains(s, "таймер на") {
+	if !strings.Contains(s, "таймер") || strings.Contains(s, "таймер на") || timerControl(s) {
 		return false
 	}
-	return strings.Contains(s, "таймер")
+	return true
+}
+
+// timerControl keeps Alice timer commands on Yandex: resume, pause, cancel, and delete.
+func timerControl(s string) bool {
+	for _, verb := range []string{"продолж", "возобнови", "удал", "отмен", "останов", "выключ", "убери", "убра", "сброс", "сбрось", "пауз"} {
+		if strings.Contains(s, verb) {
+			return true
+		}
+	}
+	return false
 }
 
 // IsStop reports a phrase that contains «алиса хватит».

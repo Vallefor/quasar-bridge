@@ -89,6 +89,22 @@ func TestCurrentQueueControlSkipsModelAndHome(t *testing.T) {
 	}
 }
 
+func TestTimerResumeStaysOnYandexWhileQueueIsActive(t *testing.T) {
+	p := &playbackFixture{active: true}
+	e := &Engine{Playback: p}
+	cfg := DefaultRoutingConfig()
+	cfg.UnknownToHome = true
+	if err := e.SetRouting(cfg); err != nil {
+		t.Fatal(err)
+	}
+	for _, text := range []string{"Продолжи таймер", "Удали таймер", "Таймер на паузу"} {
+		d := e.Decide(t.Context(), text)
+		if d.Route != "yandex" || d.Source != "rule" || p.action != "" {
+			t.Fatalf("%q: %+v action=%q", text, d, p.action)
+		}
+	}
+}
+
 func TestUnmanagedPlaybackKeepsYandexControls(t *testing.T) {
 	p := &playbackFixture{}
 	e := &Engine{Playback: p}
