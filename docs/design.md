@@ -127,7 +127,8 @@ local follow-up stay on their existing routes. The decision source is
 
 Ruling: a whole conversion request goes to Yandex through `unit_conversion`.
 It is a quantity, a currency or measurement unit, «в», and another currency
-or unit. Examples: «50 евро в рублях», «40 вон в долларах», «20 кг в граммах»,
+or unit. A currency may be followed by its country or code.
+Examples: «50 евро в рублях», «5 долларов США в рублях», «40 вон в долларах», «20 кг в граммах»,
 «1 метр в сантиметрах». A longer sentence is not this rule, and
 `unknown_to_home` does not redirect a matched conversion.
 
