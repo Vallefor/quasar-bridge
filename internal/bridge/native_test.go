@@ -389,6 +389,102 @@ func TestVoiceRoutesOnlyAfterFinalASR(t *testing.T) {
 	}
 }
 
+func TestNativeStopPhraseCancelsWithoutReply(t *testing.T) {
+	for _, tc := range []struct {
+		name, id, text string
+		voice          bool
+	}{
+		{"voice", "stop-voice", "Алиса, хватит включи свет", true},
+		{"text", "stop-text", "АЛИСА ХВАТИТ", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+			defer cancel()
+			up := make(chan []byte, 8)
+			down := make(chan []byte, 8)
+			called := make(chan struct{}, 1)
+			n := NewNative(ctx, func(_ context.Context, _ websocket.MessageType, b []byte) error { up <- b; return nil }, func(_ context.Context, _ websocket.MessageType, b []byte) error { down <- b; return nil }, resolverFunc(func(context.Context, string) (Resolution, error) {
+				called <- struct{}{}
+				return Resolution{Route: "home", Answer: "нельзя"}, nil
+			}))
+			defer n.Close()
+			n.GateText = true
+			var input []byte
+			if tc.voice {
+				input = aa(&client.TClientMessage{Message: &client.TClientMessage_Event{Event: &client.TClientMessage_TEvent{Header: &header.TEventHeader{MessageId: tc.id, StreamId: new(int64(1))}, Event: &client.TClientMessage_TEvent_VoiceInput{VoiceInput: &request.TAliceRequestProto{Request: &request.TAliceRequestProto_TRequest{Event: &common.TEvent{Type: common.EEventType_voice_input.Enum()}}, Format: new("audio/opus")}}}}})
+			} else {
+				input = aa(&client.TClientMessage{Message: &client.TClientMessage_Event{Event: &client.TClientMessage_TEvent{Header: &header.TEventHeader{MessageId: tc.id}, Event: &client.TClientMessage_TEvent_TextInput{TextInput: &request.TAliceRequestProto{Request: &request.TAliceRequestProto_TRequest{Event: &common.TEvent{Text: new(tc.text)}}}}}}})
+			}
+			if err := n.Client(ctx, websocket.MessageBinary, input); err != nil {
+				t.Fatal(err)
+			}
+			first := wire.Decode(<-up, wire.ClientToServer)
+			approved := first.Client.GetEvent().GetVoiceInput().GetRequest().GetUniproxyOptions().GetWaitClientApproval() || first.Client.GetEvent().GetTextInput().GetRequest().GetUniproxyOptions().GetWaitClientApproval()
+			if !approved {
+				t.Fatal("ungated input")
+			}
+			if tc.voice {
+				asrResult := aa(&server.TServerMessage{Message: &server.TServerMessage_Event{Event: &server.TServerMessage_TEvent{Header: &header.TEventHeader{RefMessageId: tc.id}, Event: &server.TServerMessage_TEvent_AsrResult{AsrResult: &asr.TAsrResult{EndOfUtt: new(true), Recognition: []*recognition.TAsrRecognition{{Normalized: new(tc.text)}}}}}}})
+				if err := n.Server(ctx, websocket.MessageBinary, asrResult); err != nil {
+					t.Fatal(err)
+				}
+			}
+			select {
+			case b := <-up:
+				f := wire.Decode(b, wire.ClientToServer)
+				cancel := f.Client.GetEvent().GetCancelRequest()
+				if f.Kind() != "CancelRequest" || cancel.GetRequestMessageId() != tc.id || cancel.GetUserStop() == nil || cancel.GetLocalExecution() != nil {
+					t.Fatalf("kind=%s id=%s user_stop=%v", f.Kind(), cancel.GetRequestMessageId(), cancel.GetUserStop() != nil)
+				}
+			case <-ctx.Done():
+				t.Fatal("no cancel")
+			}
+			n.Close()
+			select {
+			case <-called:
+				t.Fatal("stop phrase reached a handler")
+			default:
+			}
+			select {
+			case b := <-up:
+				t.Fatalf("extra upstream %s", wire.Decode(b, wire.ClientToServer).Kind())
+			default:
+			}
+			silent := false
+			for {
+				select {
+				case b := <-down:
+					f := wire.Decode(b, wire.ServerToClient)
+					switch f.Kind() {
+					case "TtsSpeak":
+						t.Fatal("stop phrase started playback")
+					case "AsrResult":
+					case "AliceResponse":
+						if silent {
+							t.Fatal("extra alice response")
+						}
+						voice := f.Server.GetEvent().GetAliceResponse().GetVoiceResponse()
+						if voice.GetHasVoiceResponse() || voice.GetShouldListen() || voice.GetOutputSpeech().GetText() != "" {
+							t.Fatalf("spoken stop response: has_voice=%v listen=%v text=%q", voice.GetHasVoiceResponse(), voice.GetShouldListen(), voice.GetOutputSpeech().GetText())
+						}
+						if f.Server.GetEvent().GetAliceResponse().GetError() != nil {
+							t.Fatal("stop response carries an error")
+						}
+						silent = true
+					default:
+						t.Fatalf("unexpected downstream %s", f.Kind())
+					}
+				default:
+					if !silent {
+						t.Fatal("dialog was not finished")
+					}
+					return
+				}
+			}
+		})
+	}
+}
+
 func TestRefusalReplacementKeepsExecutorDirectives(t *testing.T) {
 	for _, tc := range []struct {
 		name      string

@@ -49,8 +49,10 @@ A nonempty invalid URL is rejected; configured HA failures never retry in Yandex
 
 Ruling: HA calls use the configured local MCP capability URL in runtime.env,
 not a new HA token. Honor Assist exposure; inventory states are fresh, exposure
-is briefly cached for discovery and rechecked before actions. Batch validation
-prevents duplicate/group-overlapping targets. A home failure never retries in
+is briefly cached for discovery and rechecked before actions. A selected group
+covers its members, so those member actions are dropped; a remaining overlap is
+rejected before any call. At most eight actions run. Light, switch and fan
+on/off state is reread for about two seconds. A home failure never retries in
 Yandex because the service might already have acted.
 
 Ruling: refuse fallback substitution if cloud audio has already started or
@@ -69,6 +71,50 @@ API destination; a separate systemd unit persists it without changing Docker.
 
 Fixture verification, live text protocol checks and physical voice evidence
 must be reported separately. See validation.md for what was actually tested.
+
+Ruling: `llm_system_prompt` is optional operator text appended to the
+conversational system prompt and both Home Assistant planner prompts. The
+classifier does not receive it. An empty value leaves the built-in prompts
+unchanged. The note stays inside the single system message. When the request
+names no room, known HA areas mentioned in the note narrow the planner
+inventory; a room named in the request wins. Generic words such as «комната»
+do not select an area. Changes require a process restart.
+
+Ruling: optional `home_assistant` runs the Home Assistant Assist pipeline over
+the WebSocket command `assist_pipeline/run`, from stage `intent` through
+`intent`, and speaks `response.speech.plain.speech`. The websocket stays open
+for the life of the process and is redialed only after it drops. ASR and TTS
+stay with Yandex. `pipeline_id` selects the voice assistant, so local intent
+handling follows that pipeline. `device_id` is the device-registry id sent with the
+run. An empty pipeline uses Home Assistant's preferred one. An empty device
+id is omitted. `agent_id` is accepted and not sent. The long-lived token is
+only `QUASAR_HOME_ASSISTANT_TOKEN`. An empty URL disables the client and does
+not require a token. A successful turn is not planned again through MCP. A
+transport failure or `response_type` of `error` falls back to the MCP planner
+when that client is configured. The conversation id is kept per speaker until
+`ttl_seconds` or a dialogue reset. Elliptical follow-ups during an active
+conversation route to home after explicit routing rules. Redirects are
+refused. URL, token and request text are not logged. Changes require a
+process restart.
+
+Ruling: `routing.unknown_to_home` defaults to false. When true, text that
+matches no rule goes to home without the classifier. Phrases that ask the
+neural net go to home even if a rule chose llm. Timer phrases that a rule
+would send to Yandex go to home, except «таймер на …», which stays on Yandex.
+Alarm phrases stay on Yandex. An explicit home rule, weather, music,
+clock questions, dialogue history, page reading, code requests, and an open
+local follow-up stay on their existing routes. The decision source is
+`unknown`. SIGHUP reloads the flag with the rest of routing.
+
+Ruling: a recognized phrase that contains «алиса хватит» is dropped.
+Punctuation between the words is ignored. The utterance is not sent to
+Yandex, Home Assistant, or the local model, and nothing is spoken. The word
+«хватит» alone does not match. The check runs before rules,
+`unknown_to_home`, follow-ups, and dialogue reset. Local dialogue history
+is left in place. The speaker request is finished with a voiceless
+AliceResponse (`ShouldListen` false, no TTS). Abandoning that request makes
+the firmware time out and speak its generic error. A gated cloud request is
+canceled with `UserStop`, not `LocalExecution`.
 
 Routing configuration is compiled into an immutable policy and atomically
 published through the shared Engine. An absent routing object preserves legacy

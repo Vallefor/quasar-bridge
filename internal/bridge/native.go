@@ -512,6 +512,10 @@ func (n *Native) maybeResolve(p *nativeRequest) {
 		}
 		result := Resolution{Route: "yandex"}
 		var err error
+		if IsStop(text) {
+			n.drop(p)
+			return
+		}
 		if n.resolver != nil && strings.TrimSpace(text) != "" {
 			if routed, ok := n.resolver.(RoutedResolver); ok {
 				decision := routed.Decide(p.ctx, text)
@@ -535,6 +539,7 @@ func (n *Native) maybeResolve(p *nativeRequest) {
 		}
 		if err != nil {
 			if result.Route == "home" {
+				slog.Warn("home_command_failed", "error", err)
 				result.Answer = "Не удалось подтвердить выполнение команды в умном доме."
 			} else {
 				result.Route = "llm"
@@ -587,13 +592,63 @@ func (n *Native) maybeResolve(p *nativeRequest) {
 		}
 	})
 }
+func (n *Native) drop(p *nativeRequest) {
+	n.mu.Lock()
+	if p.canceled {
+		n.mu.Unlock()
+		return
+	}
+	p.canceled = true
+	if n.OnRoute != nil {
+		n.OnRoute(p.id, "drop")
+	}
+	n.mu.Unlock()
+	slog.Info("native_route", "request", requestTag(p.id), "route", "drop")
+	if p.gated {
+		// UserStop ends the cloud request. LocalExecution would mean this
+		// device is about to answer, and an answer that never arrives is
+		// what makes the speaker say its generic error.
+		_ = n.sendUserStop(p.ctx, p.id)
+	}
+	// The speaker still has the original request open. Abandoning it makes
+	// the firmware time out and say «произошла какая-то ошибка». A voiceless
+	// response finishes that dialog without TTS and without another listen.
+	if err := n.finishSilent(p); err != nil {
+		slog.Warn("native_drop_finish_failed", "request", requestTag(p.id))
+	}
+	p.cancel()
+}
 func (n *Native) sendCancel(ctx context.Context, id string) error {
-	m := &client.TClientMessage{Message: &client.TClientMessage_Event{Event: &client.TClientMessage_TEvent{Header: &header.TEventHeader{MessageId: newID()}, Event: &client.TClientMessage_TEvent_CancelRequest{CancelRequest: &cancellation.TCancelRequest{RequestMessageId: id, Reason: &cancellation.TCancelRequest_LocalExecution{LocalExecution: &cancellation.TCancelRequest_TReasonLocalExecution{}}}}}}}
+	return n.sendCancelMessage(ctx, &cancellation.TCancelRequest{RequestMessageId: id, Reason: &cancellation.TCancelRequest_LocalExecution{LocalExecution: &cancellation.TCancelRequest_TReasonLocalExecution{}}})
+}
+func (n *Native) sendUserStop(ctx context.Context, id string) error {
+	return n.sendCancelMessage(ctx, &cancellation.TCancelRequest{RequestMessageId: id, Reason: &cancellation.TCancelRequest_UserStop{UserStop: &cancellation.TCancelRequest_TReasonUserStop{}}})
+}
+func (n *Native) sendCancelMessage(ctx context.Context, cancel *cancellation.TCancelRequest) error {
+	m := &client.TClientMessage{Message: &client.TClientMessage_Event{Event: &client.TClientMessage_TEvent{Header: &header.TEventHeader{MessageId: newID()}, Event: &client.TClientMessage_TEvent_CancelRequest{CancelRequest: cancel}}}}
 	b, err := (wire.Frame{Client: m, Prefix: []byte("AAPI")}).Marshal()
 	if err != nil {
 		return err
 	}
 	return n.up(ctx, websocket.MessageBinary, b)
+}
+func (n *Native) finishSilent(p *nativeRequest) error {
+	if !p.gated && !p.cloud {
+		if err := n.ack(p); err != nil {
+			return err
+		}
+	}
+	requestID := p.request.GetHeader().GetRequestId()
+	if requestID == "" {
+		requestID = p.id
+	}
+	answer := &response.TAliceResponseProto{Header: &response.TAliceResponseProto_THeader{RequestId: new(requestID), ResponseId: new(newID()), DialogId: new(p.request.GetHeader().GetDialogId()), SequenceNumber: new(p.request.GetHeader().GetSequenceNumber())}, VoiceResponse: &response.TAliceResponseProto_TVoiceResponse{ShouldListen: false}, Response: &response.TAliceResponseProto_TResponse{}}
+	m := &server.TServerMessage{Message: &server.TServerMessage_Event{Event: &server.TServerMessage_TEvent{Header: &header.TEventHeader{MessageId: newID(), RefMessageId: p.id}, Event: &server.TServerMessage_TEvent_AliceResponse{AliceResponse: answer}}}}
+	b, err := (wire.Frame{Server: m, Prefix: []byte("AAPI")}).Marshal()
+	if err != nil {
+		return err
+	}
+	return n.down(p.ctx, websocket.MessageBinary, b)
 }
 func (n *Native) reply(p *nativeRequest, text string) error {
 	if p.streaming {

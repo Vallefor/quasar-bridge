@@ -40,6 +40,9 @@ func WithSpeaker(ctx context.Context, id string) context.Context {
 }
 func key(ctx context.Context) string { s, _ := ctx.Value(speakerKey{}).(string); return s }
 
+// SpeakerID is the stable hash of the speaker attached to ctx.
+func SpeakerID(ctx context.Context) string { return key(ctx) }
+
 type turn struct {
 	user, answer string
 	private      bool

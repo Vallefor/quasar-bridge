@@ -8,10 +8,12 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"unicode/utf8"
 
 	"quasarbridge/internal/assistant"
 	"quasarbridge/internal/bridge"
 	"quasarbridge/internal/dialogue"
+	"quasarbridge/internal/home"
 	"quasarbridge/internal/journal"
 )
 
@@ -34,7 +36,9 @@ type config struct {
 	Mode            string               `json:"mode"`
 	LLMBaseURL      string               `json:"llm_base_url"`
 	LLMModel        string               `json:"llm_model"`
+	LLMSystemPrompt string               `json:"llm_system_prompt"`
 	HomeWarmArea    string               `json:"home_warm_area"`
+	HomeAssistant   home.AssistConfig    `json:"home_assistant"`
 	Routing         bridge.RoutingConfig `json:"routing"`
 }
 
@@ -51,7 +55,8 @@ func readConfig(path string) (config, error) {
 		"QUASAR_LISTEN": &cfg.Listen, "QUASAR_UPSTREAM": &cfg.Upstream,
 		"QUASAR_TLS_CERT": &cfg.TLSCert, "QUASAR_TLS_KEY": &cfg.TLSKey,
 		"QUASAR_MODE": &cfg.Mode, "QUASAR_LLM_BASE_URL": &cfg.LLMBaseURL,
-		"QUASAR_LLM_MODEL": &cfg.LLMModel, "QUASAR_HOME_WARM_AREA": &cfg.HomeWarmArea,
+		"QUASAR_LLM_MODEL": &cfg.LLMModel, "QUASAR_LLM_SYSTEM_PROMPT": &cfg.LLMSystemPrompt,
+		"QUASAR_HOME_WARM_AREA": &cfg.HomeWarmArea,
 	} {
 		if value, ok := os.LookupEnv(name); ok {
 			*target = value
@@ -96,6 +101,20 @@ func readConfig(path string) (config, error) {
 	}
 	if cfg.LLMBaseURL != "" && !validEndpoint(cfg.LLMBaseURL, "http", "https") {
 		return cfg, errors.New("invalid LLM URL")
+	}
+	if value, ok := os.LookupEnv("QUASAR_HOME_ASSISTANT_URL"); ok {
+		cfg.HomeAssistant.URL = value
+	}
+	if value, ok := os.LookupEnv("QUASAR_HOME_ASSISTANT_AGENT_ID"); ok {
+		cfg.HomeAssistant.AgentID = value
+	}
+	cfg.HomeAssistant.Normalize()
+	if err := cfg.HomeAssistant.Validate(os.Getenv("QUASAR_HOME_ASSISTANT_TOKEN")); err != nil {
+		return cfg, err
+	}
+	cfg.LLMSystemPrompt = strings.TrimSpace(cfg.LLMSystemPrompt)
+	if utf8.RuneCountInString(cfg.LLMSystemPrompt) > 4000 {
+		return cfg, errors.New("llm_system_prompt is too long")
 	}
 	if cfg.Mode == "hybrid" {
 		if cfg.LLMBaseURL == "" || cfg.LLMModel == "" {

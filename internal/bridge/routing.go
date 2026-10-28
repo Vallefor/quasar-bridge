@@ -11,10 +11,11 @@ import (
 )
 
 type RoutingConfig struct {
-	Rules        []RoutingRule    `json:"rules"`
-	DefaultRoute string           `json:"default_route"`
-	Classifier   ClassifierConfig `json:"classifier"`
-	Refusal      RefusalConfig    `json:"refusal"`
+	Rules         []RoutingRule    `json:"rules"`
+	DefaultRoute  string           `json:"default_route"`
+	UnknownToHome bool             `json:"unknown_to_home"`
+	Classifier    ClassifierConfig `json:"classifier"`
+	Refusal       RefusalConfig    `json:"refusal"`
 }
 type RoutingRule struct {
 	Name     string       `json:"name"`
@@ -58,6 +59,7 @@ type compiledRule struct {
 type RoutingPolicy struct {
 	rules                           []compiledRule
 	defaultRoute                    string
+	unknownToHome                   bool
 	classifier                      ClassifierConfig
 	refusalEnabled                  bool
 	refusalPrefixes, refusalPhrases []string
@@ -70,7 +72,7 @@ func DefaultRoutingConfig() RoutingConfig {
 			{Name: "assistant_readonly", Route: "llm", Match: RoutingMatch{ContainsAny: []string{"о чем мы", "о чём мы", "что мы обсуждали", "в истории", "истории сообщени", "истории диалога", "найди в истории", "что я спрашивал", "когда я спрашивал", "что я просил", "когда я просил", "что ты отвечал", "что ты ответил", "истории запросов", "историю запросов", "прочитай страницу", "открой страницу", "прочитай веб-страницу", "открой веб-страницу", "посмотри сайт", "открой сайт", "http://", "https://"}}},
 			{Name: "home_devices", Route: "home", Match: RoutingMatch{
 				ContainsAllGroups: [][]string{
-					{"свет", "ламп", "люстр", "розетк", "штор", "кондиционер", "термостат", "обогрев", "вентилятор", "пылесос", "телевизор", "датчик", "температур", "влажност"},
+					{"свет", "ламп", "люстр", "фонар", "светильник", "торшер", "ночник", "гирлянд", "розетк", "штор", "кондиционер", "термостат", "обогрев", "вентилятор", "пылесос", "телевизор", "датчик", "температур", "влажност"},
 					{"включ", "выключ", "открой", "закрой", "установ", "постав", "сделай", "прибав", "убав", "температур", "влажност", "состояни", "проверь", "горит", "работает"},
 				}, ContainsNone: []string{"песню", "песни", "музыку", "радио", "трек"},
 			}},
@@ -109,7 +111,7 @@ func CompileRouting(cfg RoutingConfig) (*RoutingPolicy, error) {
 	if strings.TrimSpace(cfg.Classifier.Prompt) == "" {
 		return nil, errors.New("classifier prompt must not be empty")
 	}
-	p := &RoutingPolicy{defaultRoute: cfg.DefaultRoute, classifier: cfg.Classifier, refusalEnabled: cfg.Refusal.Enabled}
+	p := &RoutingPolicy{defaultRoute: cfg.DefaultRoute, unknownToHome: cfg.UnknownToHome, classifier: cfg.Classifier, refusalEnabled: cfg.Refusal.Enabled}
 	names := map[string]bool{}
 	for i, rule := range cfg.Rules {
 		fail := func(reason string) (*RoutingPolicy, error) { return nil, fmt.Errorf("routing rule %d: %s", i, reason) }
@@ -210,6 +212,56 @@ func (p *RoutingPolicy) match(text string) (RouteDecision, bool) {
 		return RouteDecision{Route: r.route, Rule: r.name, Source: "rule"}, true
 	}
 	return RouteDecision{}, false
+}
+
+// unknownHome redirects a matched rule when the house agent should own the phrase.
+// A rule that already chose home is left untouched. History, page reading,
+// alarms, and «таймер на …» stay on Yandex. Other timer words are redirected
+// only from the Yandex rule.
+func (p *RoutingPolicy) unknownHome(text string, matched RouteDecision) (RouteDecision, bool) {
+	if !p.unknownToHome || matched.Route == "home" {
+		return RouteDecision{}, false
+	}
+	if asksModel(text) || (matched.Route == "yandex" && timerPhrase(text)) {
+		matched.Route = "home"
+		matched.Source = "unknown"
+		return matched, true
+	}
+	return RouteDecision{}, false
+}
+func foldedText(text string) string {
+	return strings.Join(strings.Fields(strings.ToLower(strings.ReplaceAll(text, "ё", "е"))), " ")
+}
+func asksModel(text string) bool {
+	s := foldedText(text)
+	for _, phrase := range []string{"спроси у нейросети", "спроси нейросеть", "спроси у своей модели", "спроси свою модель"} {
+		if strings.Contains(s, phrase) {
+			return true
+		}
+	}
+	return false
+}
+func timerPhrase(text string) bool {
+	s := foldedText(text)
+	if strings.Contains(s, "таймер на") {
+		return false
+	}
+	return strings.Contains(s, "таймер")
+}
+
+// IsStop reports a phrase that must not be executed by any handler.
+func IsStop(text string) bool {
+	return strings.Contains(foldedText(stripPunct(text)), "алиса хватит")
+}
+func stripPunct(text string) string {
+	return strings.Map(func(r rune) rune {
+		switch r {
+		case ',', '.', '!', '?', ':', ';', '«', '»', '"', '\'', '—', '–', '-':
+			return ' '
+		default:
+			return r
+		}
+	}, text)
 }
 func (p *RoutingPolicy) isRefusal(text string) bool {
 	if !p.refusalEnabled {

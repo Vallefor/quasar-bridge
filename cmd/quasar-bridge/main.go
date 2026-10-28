@@ -16,6 +16,7 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"github.com/coder/websocket"
 
@@ -139,11 +140,21 @@ func main() {
 	}}
 	logs := new(journal.Writer)
 	lc := &llm.Client{BaseURL: cfg.LLMBaseURL, Model: cfg.LLMModel, APIKey: os.Getenv("QUASAR_LLM_API_KEY")}
-	engine := &bridge.Engine{LLM: lc, Dialogue: dialogue.New(cfg.DialogueContext)}
+	engine := &bridge.Engine{LLM: lc, Dialogue: dialogue.New(cfg.DialogueContext), SystemPrompt: cfg.LLMSystemPrompt}
 	var hc *home.Controller
 	if endpoint := os.Getenv("QUASAR_HOME_MCP_URL"); endpoint != "" {
-		hc = &home.Controller{Tools: &home.MCP{URL: endpoint}, Planner: lc}
-		engine.Home = hc
+		hc = &home.Controller{Tools: &home.MCP{URL: endpoint}, Planner: lc, SystemPrompt: cfg.LLMSystemPrompt}
+	}
+	var assist *home.Assist
+	if cfg.HomeAssistant.URL != "" {
+		assist = &home.Assist{Config: cfg.HomeAssistant, Token: os.Getenv("QUASAR_HOME_ASSISTANT_TOKEN")}
+	}
+	if assist != nil || hc != nil {
+		gateway := &home.Gateway{Assist: assist}
+		if hc != nil {
+			gateway.Devices = hc
+		}
+		engine.Home = gateway
 	}
 	if cfg.AssistantTools.Enabled {
 		source := func() journal.Config {
@@ -174,16 +185,27 @@ func main() {
 				slog.Error("LLM check failed")
 				os.Exit(1)
 			}
-			if hc == nil {
+			if hc == nil && assist == nil {
 				fmt.Println("LLM: ok; Home Assistant: disabled")
 				return
 			}
-			entities, err := hc.Entities(ctx)
-			if err != nil {
-				slog.Error("Home Assistant check failed", "error", err)
-				os.Exit(1)
+			var parts []string
+			if assist != nil {
+				if err := assist.Ping(ctx); err != nil {
+					slog.Error("Home Assistant check failed", "error", err)
+					os.Exit(1)
+				}
+				parts = append(parts, "conversation ok")
 			}
-			fmt.Printf("LLM: ok; Home Assistant: %d entities\n", len(entities))
+			if hc != nil {
+				entities, err := hc.Entities(ctx)
+				if err != nil {
+					slog.Error("Home Assistant check failed", "error", err)
+					os.Exit(1)
+				}
+				parts = append(parts, fmt.Sprintf("%d entities", len(entities)))
+			}
+			fmt.Printf("LLM: ok; Home Assistant: %s\n", strings.Join(parts, "; "))
 			return
 		}
 		r, err := engine.Resolve(ctx, *query)
@@ -243,7 +265,7 @@ func main() {
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		state := engine.RoutingStatus()
-		data, _ := json.Marshal(map[string]any{"status": "ok", "mode": cfg.Mode, "client_frames": clientCount.Load(), "server_frames": serverCount.Load(), "routing_revision": state.Revision, "routing_rules": state.ActiveRules, "conversation_log_enabled": logs.Enabled(), "conversation_log_failures": logs.Failures(), "assistant_tools_enabled": cfg.AssistantTools.Enabled, "dialogue_context_enabled": cfg.DialogueContext.Enabled && cfg.Mode == "hybrid", "home_assistant_enabled": hc != nil && cfg.Mode == "hybrid", "mcp_servers_configured": mcpConfigured})
+		data, _ := json.Marshal(map[string]any{"status": "ok", "mode": cfg.Mode, "client_frames": clientCount.Load(), "server_frames": serverCount.Load(), "routing_revision": state.Revision, "routing_rules": state.ActiveRules, "conversation_log_enabled": logs.Enabled(), "conversation_log_failures": logs.Failures(), "assistant_tools_enabled": cfg.AssistantTools.Enabled, "dialogue_context_enabled": cfg.DialogueContext.Enabled && cfg.Mode == "hybrid", "home_assistant_enabled": (hc != nil || assist != nil) && cfg.Mode == "hybrid", "home_assistant_conversation": assist != nil && cfg.Mode == "hybrid", "mcp_servers_configured": mcpConfigured})
 		_, _ = w.Write(data)
 	})
 	mux.Handle("/uni.ws", proxy)
@@ -291,7 +313,7 @@ func main() {
 		defer cancel()
 		_ = server.Shutdown(shutdownCtx)
 	}()
-	slog.Info("listening", "address", cfg.Listen, "mode", cfg.Mode, "routing_revision", engine.RoutingStatus().Revision)
+	slog.Info("listening", "address", cfg.Listen, "mode", cfg.Mode, "routing_revision", engine.RoutingStatus().Revision, "system_prompt_chars", utf8.RuneCountInString(cfg.LLMSystemPrompt), "home_assistant_conversation", assist != nil)
 	if cfg.TLSCert != "" && cfg.TLSKey != "" {
 		err = server.ListenAndServeTLS(cfg.TLSCert, cfg.TLSKey)
 	} else {
