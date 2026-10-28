@@ -40,12 +40,13 @@ func TestSlowLocalRequestUsesDeferredResponses(t *testing.T) {
 	for _, finalStream := range []uint32{72, 88} {
 		for _, omitID := range []bool{false, true} {
 			for _, voice := range []bool{false, true} {
-				t.Run(fmt.Sprintf("%d/omit_id=%v/voice=%v", finalStream, omitID, voice), func(t *testing.T) { testSlowLocalRequest(t, finalStream, omitID, voice) })
+				t.Run(fmt.Sprintf("%d/omit_id=%v/voice=%v", finalStream, omitID, voice), func(t *testing.T) { testSlowLocalRequest(t, finalStream, omitID, voice, true) })
 			}
 		}
 	}
+	t.Run("listening_disabled", func(t *testing.T) { testSlowLocalRequest(t, 72, false, true, false) })
 }
-func testSlowLocalRequest(t *testing.T, finalStream uint32, omitID, voice bool) {
+func testSlowLocalRequest(t *testing.T, finalStream uint32, omitID, voice, shouldListen bool) {
 	release := make(chan struct{})
 	down := make(chan wire.Frame, 20)
 	up := make(chan wire.Frame, 20)
@@ -57,6 +58,7 @@ func testSlowLocalRequest(t *testing.T, finalStream uint32, omitID, voice bool) 
 		return nil
 	}, delayedRoute{release})
 	defer n.Close()
+	n.ShouldListen = shouldListen
 	n.ProgressAfter = 5 * time.Millisecond
 	n.ProgressInterval = 10 * time.Millisecond
 	input := &client.TClientMessage{Message: &client.TClientMessage_Event{Event: &client.TClientMessage_TEvent{Header: &header.TEventHeader{MessageId: "slow-request"}, Event: &client.TClientMessage_TEvent_TextInput{TextInput: &request.TAliceRequestProto{Header: &request.TAliceRequestProto_THeader{RequestId: new("application-request")}, Request: &request.TAliceRequestProto_TRequest{Event: &common.TEvent{Text: new("история")}}}}}}}
@@ -85,9 +87,15 @@ func testSlowLocalRequest(t *testing.T, finalStream uint32, omitID, voice bool) 
 	if initial.Kind() != "AliceResponse" || !initial.Server.GetEvent().GetAliceResponse().GetResponse().GetIsStreaming() {
 		t.Fatal("missing initial streaming response")
 	}
+	if initial.Server.GetEvent().GetAliceResponse().GetVoiceResponse().GetShouldListen() {
+		t.Fatal("initial streaming response reopened listening")
+	}
 	part := next().Server.GetEvent().GetDeferredAliceResponse()
 	if part == nil || part.GetIsLast() || part.GetRequestId() != "application-request" || part.GetBaseResponse().GetText() != "" {
 		t.Fatal("invalid keepalive")
+	}
+	if part.GetBaseResponse().GetShouldListen() {
+		t.Fatal("keepalive reopened listening")
 	}
 	var firstTTS wire.Frame
 	canceledCloud := false
@@ -126,6 +134,9 @@ func testSlowLocalRequest(t *testing.T, finalStream uint32, omitID, voice bool) 
 		f := next()
 		r := f.Server.GetEvent().GetDeferredAliceResponse()
 		if r != nil && r.GetIsLast() {
+			if got := r.GetBaseResponse().GetShouldListen(); got != shouldListen {
+				t.Fatalf("final answer should_listen=%v, want %v", got, shouldListen)
+			}
 			unknown := r.GetBaseResponse().ProtoReflect().GetUnknown()
 			num, typ, count := protowire.ConsumeTag(unknown)
 			voice, _ := protowire.ConsumeString(unknown[count:])

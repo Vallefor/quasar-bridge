@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"flag"
 	"net/http"
@@ -28,6 +29,16 @@ func TestCustomMCPProcess(t *testing.T) {
 		main()
 		return
 	}
+	for _, apiName := range []string{"chat_completions", "responses"} {
+		t.Run(apiName, func(t *testing.T) { testCustomMCPProcess(t, apiName, nil) })
+	}
+	t.Run("chat_parameters", func(t *testing.T) {
+		testCustomMCPProcess(t, "chat_completions", map[string]any{"temperature": nil, "response_format": nil, "chat_template_kwargs": nil})
+	})
+}
+
+func testCustomMCPProcess(t *testing.T, apiName string, chatParameters map[string]any) {
+	t.Helper()
 	var toolCalls, llmCalls atomic.Int64
 	server := mcp.NewServer(&mcp.Implementation{Name: "fixture", Version: "1"}, nil)
 	server.AddTool(&mcp.Tool{Name: "echo", InputSchema: map[string]any{"type": "object"}}, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -37,12 +48,63 @@ func TestCustomMCPProcess(t *testing.T) {
 	mcpAPI := httptest.NewServer(mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, nil))
 	defer mcpAPI.Close()
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if apiName == "responses" {
+			if r.URL.Path != "/v1/responses" {
+				t.Errorf("Responses endpoint = %q", r.URL.Path)
+			}
+			var request struct {
+				Input []struct {
+					Type   string `json:"type"`
+					CallID string `json:"call_id"`
+					Output string `json:"output"`
+				} `json:"input"`
+				Tools []struct {
+					Type string `json:"type"`
+					Name string `json:"name"`
+				} `json:"tools"`
+			}
+			if err := json.UnmarshalRead(r.Body, &request); err != nil {
+				t.Error(err)
+				return
+			}
+			var output []any
+			if llmCalls.Add(1) == 1 {
+				if len(request.Tools) != 1 || request.Tools[0].Type != "function" || !strings.HasPrefix(request.Tools[0].Name, "mcp__fixture__") {
+					t.Error("MCP definitions did not reach Responses API")
+					return
+				}
+				output = []any{map[string]any{"id": "fc-mcp-1", "type": "function_call", "status": "completed", "call_id": "mcp-1", "name": request.Tools[0].Name, "arguments": `{}`}}
+			} else {
+				if len(request.Input) == 0 {
+					t.Error("Responses input missing")
+					return
+				}
+				last := request.Input[len(request.Input)-1]
+				if last.Type != "function_call_output" || last.CallID != "mcp-1" || !strings.Contains(last.Output, "through MCP") {
+					t.Errorf("MCP output did not return to Responses API: %+v", last)
+				}
+				output = []any{map[string]any{"type": "message", "role": "assistant", "status": "completed", "content": []any{map[string]any{"type": "output_text", "text": "Ответ получен"}}}}
+			}
+			w.Header().Set("Content-Type", "application/json")
+			if err := json.MarshalWrite(w, map[string]any{"status": "completed", "output": output}); err != nil {
+				t.Error(err)
+			}
+			return
+		}
 		var request struct {
-			Messages []llm.Message `json:"messages"`
-			Tools    []llm.Tool    `json:"tools"`
+			Messages           []llm.Message  `json:"messages"`
+			Tools              []llm.Tool     `json:"tools"`
+			Temperature        jsontext.Value `json:"temperature"`
+			ResponseFormat     jsontext.Value `json:"response_format"`
+			ChatTemplateKwargs jsontext.Value `json:"chat_template_kwargs"`
 		}
 		if err := json.UnmarshalRead(r.Body, &request); err != nil {
 			t.Error(err)
+			return
+		}
+		if chatParameters != nil && (len(request.Temperature) > 0 || len(request.ResponseFormat) > 0 || len(request.ChatTemplateKwargs) > 0) {
+			t.Error("configured chat parameter removal did not reach the API")
+			http.Error(w, "unsupported parameter", http.StatusBadRequest)
 			return
 		}
 		var message llm.Message
@@ -63,7 +125,7 @@ func TestCustomMCPProcess(t *testing.T) {
 		_, _ = w.Write(body)
 	}))
 	defer api.Close()
-	body, _ := json.Marshal(map[string]any{"mode": "hybrid", "llm_base_url": api.URL + "/v1", "llm_model": "fixture", "assistant_tools": map[string]any{"enabled": true, "web": false, "history": false, "time": false, "mcp_servers": []any{map[string]any{"name": "fixture", "url": mcpAPI.URL}}}})
+	body, _ := json.Marshal(map[string]any{"mode": "hybrid", "llm_api": apiName, "llm_chat_parameters": chatParameters, "llm_base_url": api.URL + "/v1", "llm_model": "fixture", "assistant_tools": map[string]any{"enabled": true, "web": false, "history": false, "time": false, "mcp_servers": []any{map[string]any{"name": "fixture", "url": mcpAPI.URL}}}})
 	path := configFile(t, string(body))
 	for _, action := range []string{"check-mcp", "query"} {
 		ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)

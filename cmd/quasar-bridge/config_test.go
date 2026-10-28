@@ -10,6 +10,71 @@ import (
 	"quasarbridge/internal/bridge"
 )
 
+func TestReadConfigLLMAPISettings(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		body   string
+		api    string
+		effort string
+		tokens int
+		tools  int
+	}{
+		{"defaults", `{}`, "chat_completions", "", 4096, 0},
+		{"responses", `{"llm_api":"responses","llm_reasoning_effort":"low","llm_max_output_tokens":8000,"llm_hosted_tools":["web_search","code_interpreter"]}`, "responses", "low", 8000, 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := readConfig(configFile(t, tc.body))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.LLMAPI != tc.api || cfg.LLMReasoningEffort != tc.effort || cfg.LLMMaxOutputTokens != tc.tokens || len(cfg.LLMHostedTools) != tc.tools {
+				t.Fatalf("LLM settings: %+v", cfg)
+			}
+		})
+	}
+}
+
+func TestReadConfigLLMAPIEnvironmentOverrides(t *testing.T) {
+	t.Setenv("QUASAR_LLM_API", "responses")
+	t.Setenv("QUASAR_LLM_REASONING_EFFORT", "low")
+	cfg, err := readConfig(configFile(t, `{"llm_api":"chat_completions"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.LLMAPI != "responses" || cfg.LLMReasoningEffort != "low" {
+		t.Fatalf("env overrides: %+v", cfg)
+	}
+	t.Setenv("QUASAR_LLM_API", "")
+	t.Setenv("QUASAR_LLM_REASONING_EFFORT", "")
+	if _, err := readConfig(configFile(t, `{}`)); err != nil {
+		t.Fatalf("empty API override should use default: %v", err)
+	}
+}
+
+func TestReadConfigRejectsInvalidLLMAPISettings(t *testing.T) {
+	for _, body := range []string{
+		`{"llm_api":"completions"}`,
+		`{"llm_api":"responses","llm_reasoning_effort":"fast"}`,
+		`{"llm_reasoning_effort":"low"}`,
+		`{"llm_api":"responses","llm_max_output_tokens":0}`,
+		`{"llm_api":"responses","llm_max_output_tokens":-1}`,
+		`{"llm_api":"responses","llm_hosted_tools":["unknown"]}`,
+		`{"llm_api":"responses","llm_hosted_tools":["web_search","web_search"]}`,
+		`{"llm_hosted_tools":["web_search"]}`,
+	} {
+		t.Run(body, func(t *testing.T) {
+			if _, err := readConfig(configFile(t, body)); err == nil {
+				t.Fatal("invalid LLM settings accepted")
+			}
+		})
+	}
+	for _, effort := range []string{"none", "minimal", "low", "medium", "high", "xhigh", "max"} {
+		if _, err := readConfig(configFile(t, `{"llm_api":"responses","llm_reasoning_effort":"`+effort+`"}`)); err != nil {
+			t.Fatalf("effort %q rejected: %v", effort, err)
+		}
+	}
+}
+
 func configFile(t *testing.T, body string) string {
 	t.Helper()
 	p := filepath.Join(t.TempDir(), "config.json")
@@ -17,6 +82,27 @@ func configFile(t *testing.T, body string) string {
 		t.Fatal(err)
 	}
 	return p
+}
+
+func TestReadConfigAcceptsListenAfterReply(t *testing.T) {
+	for _, tc := range []struct {
+		body string
+		want bool
+	}{
+		{`{}`, true},
+		{`{"listen_after_reply":true}`, true},
+		{`{"listen_after_reply":false}`, false},
+	} {
+		t.Run(tc.body, func(t *testing.T) {
+			cfg, err := readConfig(configFile(t, tc.body))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.ListenAfterReply != tc.want {
+				t.Fatalf("listen_after_reply=%v, want %v", cfg.ListenAfterReply, tc.want)
+			}
+		})
+	}
 }
 func TestReadConfigEnvironmentOverridesDeploymentSettings(t *testing.T) {
 	t.Setenv("QUASAR_MODE", "hybrid")
@@ -136,7 +222,7 @@ func TestRoutingDefaultsAndPartialOverlay(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(cfg.Routing.Rules) != 4 || cfg.Routing.Classifier.TimeoutMS != 8000 || cfg.Routing.Classifier.OnError != "llm" || cfg.Routing.Refusal.Enabled {
+	if len(cfg.Routing.Rules) != len(bridge.DefaultRoutingConfig().Rules) || cfg.Routing.Classifier.TimeoutMS != 8000 || cfg.Routing.Classifier.OnError != "llm" || cfg.Routing.Refusal.Enabled {
 		t.Fatalf("partial defaults lost: %+v", cfg.Routing)
 	}
 	empty, err := readConfig(configFile(t, `{"routing":{"rules":[],"default_route":"yandex"}}`))

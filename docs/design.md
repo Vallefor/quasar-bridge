@@ -106,15 +106,19 @@ clock questions, dialogue history, page reading, code requests, and an open
 local follow-up stay on their existing routes. The decision source is
 `unknown`. SIGHUP reloads the flag with the rest of routing.
 
-Ruling: a recognized phrase that contains «алиса хватит» is dropped.
-Punctuation between the words is ignored. The utterance is not sent to
-Yandex, Home Assistant, or the local model, and nothing is spoken. The word
-«хватит» alone does not match. The check runs before rules,
-`unknown_to_home`, follow-ups, and dialogue reset. Local dialogue history
-is left in place. The speaker request is finished with a voiceless
-AliceResponse (`ShouldListen` false, no TTS). Abandoning that request makes
-the firmware time out and speak its generic error. A gated cloud request is
-canceled with `UserStop`, not `LocalExecution`.
+Ruling: a whole playback command still stops music. That includes «Алиса,
+хватит», «хватит», «стоп», pause, and resume. An active local queue handles
+it; otherwise the `speaker_playback` rule sends it to Yandex. A longer
+recognized phrase that contains «алиса хватит» is dropped. Punctuation
+between the words is ignored. That longer utterance is not sent to Yandex,
+Home Assistant, or the local model, and nothing is spoken. The word
+«хватит» alone does not match the drop. The drop runs after the playback
+exemption and before other rules, `unknown_to_home`, follow-ups, retry, and
+dialogue reset. Local dialogue history is left in place. The speaker request
+is finished with a voiceless AliceResponse (`ShouldListen` false, no TTS).
+Abandoning that request makes the firmware time out and speak its generic
+error. A gated cloud request is canceled with `UserStop`, not
+`LocalExecution`.
 
 Routing configuration is compiled into an immutable policy and atomically
 published through the shared Engine. An absent routing object preserves legacy

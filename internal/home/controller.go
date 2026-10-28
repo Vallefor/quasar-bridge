@@ -74,7 +74,10 @@ func (c *Controller) Entities(ctx context.Context) ([]Entity, error) {
 	var entities []Entity
 	seen := map[string]bool{}
 	for _, domain := range domains {
-		for offset := 0; offset < 2000; {
+		for offset := 0; ; {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
 			raw, err := c.Tools.Call(ctx, "ha_search", map[string]any{"domain_filter": domain, "limit": 200, "offset": offset, "include_hidden": false, "result_fields": []string{"entity_id", "friendly_name", "state", "area", "aliases", "member_entity_ids"}})
 			if err != nil {
 				return nil, err
@@ -91,6 +94,7 @@ func (c *Controller) Entities(ctx context.Context) ([]Entity, error) {
 			if result.Partial {
 				return nil, errors.New("Home Assistant inventory incomplete")
 			}
+			previousCount := len(entities)
 			for _, e := range result.Entities {
 				if !seen[e.ID] {
 					seen[e.ID] = true
@@ -100,11 +104,8 @@ func (c *Controller) Entities(ctx context.Context) ([]Entity, error) {
 			if !result.HasMore {
 				break
 			}
-			if result.NextOffset <= offset {
+			if result.NextOffset <= offset || len(entities) == previousCount {
 				return nil, errors.New("Home Assistant pagination did not advance")
-			}
-			if result.NextOffset >= 2000 {
-				return nil, errors.New("Home Assistant inventory exceeds limit")
 			}
 			offset = result.NextOffset
 		}
@@ -125,9 +126,6 @@ func (c *Controller) Handle(ctx context.Context, text string) (string, error) {
 		return "", err
 	}
 	entities, roomScope := scopeForRequest(text, c.SystemPrompt, entities)
-	if len(entities) > 80 {
-		return "Уточните комнату и тип устройства: найдено слишком много устройств.", nil
-	}
 	start := time.Now()
 	enriched := make([]Entity, len(entities))
 	visible := make([]bool, len(entities))
@@ -159,6 +157,9 @@ func (c *Controller) Handle(ctx context.Context, text string) (string, error) {
 		}
 	}
 	slog.Info("home_inventory", "exposed_entities", len(entities), "room_scope", roomScope, "metadata_ms", time.Since(start).Milliseconds())
+	if len(entities) > 80 {
+		return "Уточните комнату и тип устройства: найдено слишком много устройств.", nil
+	}
 	if len(entities) == 0 {
 		return "Не нашлось подходящих устройств, разрешённых для голосового помощника в Home Assistant.", nil
 	}

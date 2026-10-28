@@ -139,8 +139,14 @@ func main() {
 		}
 	}}
 	logs := new(journal.Writer)
-	lc := &llm.Client{BaseURL: cfg.LLMBaseURL, Model: cfg.LLMModel, APIKey: os.Getenv("QUASAR_LLM_API_KEY")}
+	lc := &llm.Client{
+		BaseURL: cfg.LLMBaseURL, Model: cfg.LLMModel, APIKey: os.Getenv("QUASAR_LLM_API_KEY"),
+		API: cfg.LLMAPI, ReasoningEffort: cfg.LLMReasoningEffort,
+		MaxOutputTokens: cfg.LLMMaxOutputTokens, HostedTools: cfg.LLMHostedTools,
+		ChatParameters: cfg.LLMChatParameters,
+	}
 	engine := &bridge.Engine{LLM: lc, Dialogue: dialogue.New(cfg.DialogueContext), SystemPrompt: cfg.LLMSystemPrompt}
+	var musicQueue *assistant.MusicQueue
 	var hc *home.Controller
 	if endpoint := os.Getenv("QUASAR_HOME_MCP_URL"); endpoint != "" {
 		hc = &home.Controller{Tools: &home.MCP{URL: endpoint}, Planner: lc, SystemPrompt: cfg.LLMSystemPrompt}
@@ -164,7 +170,26 @@ func main() {
 			}
 			return c
 		}
-		tools := &assistant.Tools{Config: cfg.AssistantTools, JournalConfig: source, WebReader: assistant.NewWebReader(cfg.AssistantTools)}
+		reader := assistant.NewWebReader(cfg.AssistantTools)
+		if cfg.AssistantTools.PlaySound && cfg.AssistantTools.Web {
+			if base := musicBaseURL(cfg); base != "" {
+				var err error
+				musicQueue, err = assistant.NewMusicQueue(base, reader)
+				if err != nil {
+					slog.Error("music queue configuration rejected", "error", err)
+					os.Exit(1)
+				}
+			} else {
+				slog.Warn("music playback needs assistant_tools.music_base_url reachable by the speaker")
+			}
+		}
+		var musicPlayback *assistant.MusicPlayback
+		if musicQueue != nil {
+			musicPlayback = assistant.NewMusicPlayback(musicQueue)
+			engine.Playback = musicPlayback
+		}
+		tools := &assistant.Tools{Config: cfg.AssistantTools, JournalConfig: source, WebReader: reader, Playback: musicPlayback}
+		engine.Music = tools
 		engine.Assistant = &assistant.Agent{Client: lc, Tools: tools, MaxRounds: cfg.AssistantTools.MaxRounds, MaxCalls: cfg.AssistantTools.MaxCalls}
 	}
 	if err := engine.SetRouting(cfg.Routing); err != nil {
@@ -245,6 +270,7 @@ func main() {
 		proxy.NewSession = func(ctx context.Context, up, down bridge.Sender) bridge.Session {
 			n := bridge.NewNative(ctx, up, down, engine)
 			n.GateText = false
+			n.ShouldListen = cfg.ListenAfterReply
 			if cfg.LocalProgress.Enabled {
 				n.ProgressAfter = time.Duration(cfg.LocalProgress.AfterMS) * time.Millisecond
 				n.ProgressInterval = time.Duration(cfg.LocalProgress.IntervalMS) * time.Millisecond
@@ -254,6 +280,9 @@ func main() {
 		}
 	}
 	mux := http.NewServeMux()
+	if musicQueue != nil {
+		mux.Handle("/music-stream/", musicQueue)
+	}
 	mcpConfigured := 0
 	if cfg.Mode == "hybrid" && cfg.AssistantTools.Enabled {
 		for _, server := range cfg.AssistantTools.MCPServers {
@@ -265,7 +294,7 @@ func main() {
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		state := engine.RoutingStatus()
-		data, _ := json.Marshal(map[string]any{"status": "ok", "mode": cfg.Mode, "client_frames": clientCount.Load(), "server_frames": serverCount.Load(), "routing_revision": state.Revision, "routing_rules": state.ActiveRules, "conversation_log_enabled": logs.Enabled(), "conversation_log_failures": logs.Failures(), "assistant_tools_enabled": cfg.AssistantTools.Enabled, "dialogue_context_enabled": cfg.DialogueContext.Enabled && cfg.Mode == "hybrid", "home_assistant_enabled": (hc != nil || assist != nil) && cfg.Mode == "hybrid", "home_assistant_conversation": assist != nil && cfg.Mode == "hybrid", "mcp_servers_configured": mcpConfigured})
+		data, _ := json.Marshal(map[string]any{"status": "ok", "mode": cfg.Mode, "client_frames": clientCount.Load(), "server_frames": serverCount.Load(), "routing_revision": state.Revision, "routing_rules": state.ActiveRules, "conversation_log_enabled": logs.Enabled(), "conversation_log_failures": logs.Failures(), "assistant_tools_enabled": cfg.AssistantTools.Enabled, "dialogue_context_enabled": cfg.DialogueContext.Enabled && cfg.Mode == "hybrid", "home_assistant_enabled": (hc != nil || assist != nil) && cfg.Mode == "hybrid", "home_assistant_conversation": assist != nil && cfg.Mode == "hybrid", "mcp_servers_configured": mcpConfigured, "music_playback_enabled": musicQueue != nil})
 		_, _ = w.Write(data)
 	})
 	mux.Handle("/uni.ws", proxy)

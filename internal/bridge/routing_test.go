@@ -38,6 +38,28 @@ func TestRoutingConditionsAndOrderedPriority(t *testing.T) {
 		}
 	}
 }
+
+func TestMusicFromWebsiteRoutesBeforeYandexMusic(t *testing.T) {
+	e := &Engine{}
+	for _, text := range []string{
+		"Включи музыку с сайта abc.su/music",
+		"Проиграй песни со страницы https://example.org/music",
+		"Воспроизведи аудио абв точка су слэш music",
+	} {
+		decision := e.Decide(t.Context(), text)
+		if decision.Route != "llm" || decision.Rule != "music_from_site" {
+			t.Errorf("website music routed incorrectly: %q: %+v", text, decision)
+		}
+	}
+	for _, text := range []string{"Включи музыку", "Включи радио", "Поставь песню"} {
+		if decision := e.Decide(t.Context(), text); decision.Route != "yandex" {
+			t.Errorf("ordinary Yandex music routing changed: %q: %+v", text, decision)
+		}
+	}
+	if decision := e.Decide(t.Context(), "Не включай музыку с сайта abc.su/music"); decision.Rule == "music_from_site" {
+		t.Fatal("negative playback request matched music rule")
+	}
+}
 func TestRoutingValidationAndCallerMutation(t *testing.T) {
 	for _, mutate := range []func(*RoutingConfig){
 		func(c *RoutingConfig) { c.Rules[0].Route = "bad" },
@@ -272,8 +294,19 @@ func TestStopPhraseDropsTheWholeUtterance(t *testing.T) {
 	for _, text := range []string{
 		"алиса хватит",
 		"Алиса, хватит!",
+	} {
+		if !IsStop(text) {
+			t.Errorf("IsStop(%q) = false", text)
+		}
+		got := e.Decide(t.Context(), text)
+		if got.Route != "yandex" || got.Rule != "speaker_playback" || got.Source != "rule" {
+			t.Errorf("playback stop %q: %+v", text, got)
+		}
+	}
+	for _, text := range []string{
 		"АЛИСА ХВАТИТ включи свет",
 		"алиса — хватит, начни новый разговор",
+		"алиса хватит, используй нейросеть",
 	} {
 		if !IsStop(text) {
 			t.Errorf("IsStop(%q) = false", text)
@@ -304,7 +337,10 @@ func TestStopPhraseDropsTheWholeUtterance(t *testing.T) {
 	if got := e.Decide(t.Context(), "а вчера?"); got.Route != "llm" || got.Source != "dialogue" {
 		t.Fatal("stop cleared dialogue", got)
 	}
-	if got := (&Engine{}).Decide(t.Context(), "Алиса, хватит"); got.Route != "drop" || got.Source != "stop" {
+	if got := (&Engine{}).Decide(t.Context(), "Алиса, хватит"); got.Route != "yandex" || got.Rule != "speaker_playback" || got.Source != "rule" {
+		t.Fatal(got)
+	}
+	if got := (&Engine{}).Decide(t.Context(), "Алиса, хватит, включи свет"); got.Route != "drop" || got.Source != "stop" {
 		t.Fatal(got)
 	}
 }
@@ -317,6 +353,28 @@ func TestShortHistoryRequestsSkipClassifier(t *testing.T) {
 	for _, text := range []string{"о чем мы сегодня общались", "О чём мы сегодня общались?", "что мы обсуждали сегодня"} {
 		if d := e.Decide(t.Context(), text); d.Route != "llm" || d.Source != "rule" {
 			t.Errorf("%q: %+v", text, d)
+		}
+	}
+}
+
+func TestSpeakerPlaybackControlSkipsClassifier(t *testing.T) {
+	e := &Engine{Home: homeFunc(func(context.Context, string) (string, error) { t.Fatal("speaker control reached home"); return "", nil }), LLM: completionFunc(func(context.Context, []llm.Message, bool) (string, error) {
+		t.Fatal("speaker control reached classifier")
+		return "", nil
+	})}
+	for _, text := range []string{"Хватит", "Алиса, хватит!", "Стоп", "Останови музыку", "Выключи музыку", "Пауза", "Поставь на паузу", "Продолжи музыку", "Возобнови воспроизведение"} {
+		d := e.Decide(t.Context(), text)
+		if d.Route != "yandex" || d.Rule != "speaker_playback" || d.Source != "rule" {
+			t.Errorf("%q: %+v", text, d)
+		}
+	}
+	p, err := CompileRouting(DefaultRoutingConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, text := range []string{"Объясни слово хватит", "Не останавливай музыку", "Хватит ли памяти для модели", "Поставь таймер на паузу", "Включи свет", "Поставь музыку с сайта audio.example/music"} {
+		if d, ok := p.match(text); ok && d.Rule == "speaker_playback" {
+			t.Errorf("false speaker control: %q", text)
 		}
 	}
 }

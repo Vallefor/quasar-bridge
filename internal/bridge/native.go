@@ -10,7 +10,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"uuid"
 
 	"github.com/coder/websocket"
 	request "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/alice_request"
@@ -25,6 +24,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"quasarbridge/internal/dialogue"
+	"quasarbridge/internal/sound"
 	"quasarbridge/internal/wire"
 )
 
@@ -45,6 +45,7 @@ type FallbackResolver interface {
 
 type nativeRequest struct {
 	streaming                       bool
+	listenOnStreamStart             bool
 	partial                         uint32
 	responseID                      string
 	final                           bool
@@ -56,6 +57,7 @@ type nativeRequest struct {
 	id                              string
 	request                         *request.TAliceRequestProto
 	text                            string
+	route                           string
 	ctx                             context.Context
 	cancel                          context.CancelFunc
 	started, canceled, local, cloud bool
@@ -68,6 +70,9 @@ type nativeRequest struct {
 	audioStream                     uint32
 	audioWaiting                    bool
 	progressAudioDone               chan struct{}
+	soundRequest                    *sound.Request
+	soundDirective                  *soundDirective
+	soundSealed                     bool
 	expires                         *time.Timer
 }
 type Native struct {
@@ -84,6 +89,7 @@ type Native struct {
 	wg               sync.WaitGroup
 	OnRoute          func(id, route string)
 	GateText         bool
+	ShouldListen     bool
 	DecisionDelay    time.Duration
 	ProgressAfter    time.Duration
 	ProgressInterval time.Duration
@@ -91,7 +97,7 @@ type Native struct {
 
 func NewNative(ctx context.Context, up, down Sender, resolver Resolver) *Native {
 	ctx, cancel := context.WithCancel(ctx)
-	return &Native{connectionScope: newID(), ctx: ctx, cancel: cancel, up: up, down: down, resolver: resolver, requests: map[string]*nativeRequest{}, tts: map[string]*nativeRequest{}, streams: map[uint32]*nativeRequest{}, blocked: map[uint32]*nativeRequest{}}
+	return &Native{connectionScope: newID(), ctx: ctx, cancel: cancel, up: up, down: down, resolver: resolver, ShouldListen: true, requests: map[string]*nativeRequest{}, tts: map[string]*nativeRequest{}, streams: map[uint32]*nativeRequest{}, blocked: map[uint32]*nativeRequest{}}
 }
 func (n *Native) Close() {
 	n.cancel()
@@ -149,7 +155,13 @@ func (n *Native) Client(ctx context.Context, k websocket.MessageType, data []byt
 			scope = "uuid:" + id
 		}
 		pctx, cancel := context.WithTimeout(dialogue.WithSpeaker(n.ctx, scope), 90*time.Second)
+		playerState := nativePlaybackState(req)
+		pctx = sound.WithPlaybackState(pctx, playerState)
+		slog.Info("native_player_state", "request", requestTag(id), "present", playerState.Present, "player_state", playerState.PlayerState, "offset_known", playerState.OffsetKnown, "offset_ms", playerState.OffsetMS, "has_stream", playerState.StreamID != "", "stream_tag", requestTag(playerState.StreamID))
 		p := &nativeRequest{id: id, request: proto.Clone(req).(*request.TAliceRequestProto), text: req.GetRequest().GetEvent().GetText(), ctx: pctx, cancel: cancel}
+		p.ctx = sound.WithPlayer(p.ctx, func(ctx context.Context, request sound.Request) error {
+			return n.queueSound(ctx, p, request)
+		})
 		p.header = proto.Clone(e.GetHeader()).(*header.TEventHeader)
 		p.isText = f.Kind() == "TextInput"
 		p.input = append([]byte{}, data...)
@@ -450,6 +462,7 @@ func (n *Native) Server(ctx context.Context, k websocket.MessageType, data []byt
 					return
 				}
 				if err != nil {
+					n.discardSound(p)
 					result.Answer = "Сейчас не получилось получить ответ локальной модели."
 				}
 				_ = n.sendCancel(p.ctx, p.id)
@@ -491,7 +504,11 @@ func (n *Native) Server(ctx context.Context, k websocket.MessageType, data []byt
 	}
 	n.mu.Unlock()
 	n.maybeResolve(p)
-	return n.down(ctx, k, data)
+	if err := n.down(ctx, k, data); err != nil {
+		return err
+	}
+	n.captureCloud(p, e)
+	return nil
 }
 func (n *Native) maybeResolve(p *nativeRequest) {
 	n.mu.Lock()
@@ -512,13 +529,21 @@ func (n *Native) maybeResolve(p *nativeRequest) {
 		}
 		result := Resolution{Route: "yandex"}
 		var err error
+		// Drop before Decide so a cancelled phrase does not reserve a dialogue
+		// turn. A standalone playback command is exempt and continues below.
 		if IsStop(text) {
-			n.drop(p)
-			return
+			engine, routed := n.resolver.(*Engine)
+			if _, exempt := engine.directPlayback(p.ctx, text); !routed || !exempt {
+				n.drop(p)
+				return
+			}
 		}
 		if n.resolver != nil && strings.TrimSpace(text) != "" {
 			if routed, ok := n.resolver.(RoutedResolver); ok {
 				decision := routed.Decide(p.ctx, text)
+				n.mu.Lock()
+				p.listenOnStreamStart = decision.Source == "dialogue_retry"
+				n.mu.Unlock()
 				slog.Info("native_route_decision", "request", requestTag(p.id), "route", decision.Route, "source", decision.Source)
 				stop := func() {}
 				if decision.Route != "yandex" && n.ProgressAfter > 0 {
@@ -538,9 +563,12 @@ func (n *Native) maybeResolve(p *nativeRequest) {
 			return
 		}
 		if err != nil {
+			n.discardSound(p)
 			if result.Route == "home" {
 				slog.Warn("home_command_failed", "error", err)
 				result.Answer = "Не удалось подтвердить выполнение команды в умном доме."
+			} else if result.Route == "music" {
+				result.Answer = "Не удалось включить музыку с этой страницы."
 			} else {
 				result.Route = "llm"
 				result.Answer = "Сейчас не получилось получить ответ локальной модели."
@@ -554,6 +582,7 @@ func (n *Native) maybeResolve(p *nativeRequest) {
 		if n.OnRoute != nil {
 			n.OnRoute(p.id, result.Route)
 		}
+		p.route = result.Route
 		if result.Route == "yandex" {
 			p.cloud = true
 			var err error
@@ -659,6 +688,13 @@ func (n *Native) reply(p *nativeRequest, text string) error {
 		requestID = p.id
 	}
 	answer := &response.TAliceResponseProto{Header: &response.TAliceResponseProto_THeader{RequestId: new(requestID), ResponseId: new(newID()), DialogId: new(p.request.GetHeader().GetDialogId()), SequenceNumber: new(p.request.GetHeader().GetSequenceNumber())}, VoiceResponse: &response.TAliceResponseProto_TVoiceResponse{OutputSpeech: &response.TAliceResponseProto_TVoiceResponse_TOutputSpeech{Text: new(text)}, HasVoiceResponse: true}, Response: &response.TAliceResponseProto_TResponse{Cards: []*response.TAliceResponseProto_TResponse_TCard{{Type: "simple_text", Text: new(text), CardId: new(newID())}}}}
+	silentPlayback := n.hasSilentPlayback(p)
+	answer.VoiceResponse.ShouldListen = n.ShouldListen && !silentPlayback
+	if silentPlayback {
+		answer.VoiceResponse.HasVoiceResponse = false
+		answer.VoiceResponse.OutputSpeech.Text = new("")
+	}
+	answer.Response.Directives = n.takeSound(p)
 	m := &server.TServerMessage{Message: &server.TServerMessage_Event{Event: &server.TServerMessage_TEvent{Header: &header.TEventHeader{MessageId: newID(), RefMessageId: p.id}, Event: &server.TServerMessage_TEvent_AliceResponse{AliceResponse: answer}}}}
 	b, err := (wire.Frame{Server: m, Prefix: []byte("AAPI")}).Marshal()
 	if err != nil {
@@ -671,6 +707,10 @@ func (n *Native) reply(p *nativeRequest, text string) error {
 	}
 	if err := n.down(p.ctx, websocket.MessageBinary, b); err != nil {
 		return err
+	}
+	n.captureDelivered(p, text, true, silentPlayback || len(answer.Response.Directives) > 0, true)
+	if silentPlayback {
+		return nil
 	}
 	return n.synthesize(p, text)
 }
@@ -689,8 +729,7 @@ func requestTag(id string) string {
 
 // Quasar uses Yandex TGUID spelling (8-8-8-8), not RFC UUID spelling.
 func newID() string {
-	h := strings.ReplaceAll(uuid.NewV4().String(), "-", "")
-	return h[:8] + "-" + h[8:16] + "-" + h[16:24] + "-" + h[24:]
+	return sound.NewStreamID()
 }
 
 func (n *Native) makeContinue(p *nativeRequest) ([]byte, error) {

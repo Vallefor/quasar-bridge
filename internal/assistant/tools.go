@@ -11,12 +11,14 @@ import (
 	"quasarbridge/internal/dialogue"
 	"quasarbridge/internal/journal"
 	"quasarbridge/internal/llm"
+	"quasarbridge/internal/webaddress"
 )
 
 type Tools struct {
 	Config        Config
 	JournalConfig func() journal.Config
 	WebReader     *WebReader
+	Playback      *MusicPlayback
 	Now           func() time.Time
 }
 
@@ -34,6 +36,12 @@ func (t *Tools) Definitions() []llm.Tool {
 	if t.Config.Time {
 		tools = append(tools, definition("current_time", "Текущие дата, время и часовой пояс пользователя.", map[string]any{}, []string{}))
 	}
+	if t.Config.PlaySound {
+		tools = append(tools, soundDefinition())
+		if t.Config.Web && t.Playback != nil {
+			tools = append(tools, musicDefinition())
+		}
+	}
 	return tools
 }
 func (t *Tools) Call(ctx context.Context, name, args string) (any, error) {
@@ -44,6 +52,10 @@ func (t *Tools) Call(ctx context.Context, name, args string) (any, error) {
 		return nil, errors.New("tool arguments exceed limit")
 	}
 	switch {
+	case name == "play_music" && t.Config.PlaySound && t.Config.Web && t.Playback != nil:
+		return t.playMusic(ctx, args)
+	case name == "play_sound" && t.Config.PlaySound:
+		return playSound(ctx, args)
 	case name == "read_webpage" && t.Config.Web:
 		var p struct {
 			URL string `json:"url"`
@@ -129,6 +141,9 @@ func (t *Tools) InitialCallsForConversation(messages []llm.Message) []llm.Functi
 	return t.initialCalls(text, history)
 }
 func (t *Tools) initialCalls(text string, history bool) []llm.FunctionCall {
+	if strings.Contains(strings.ToLower(text), "сайт") || webaddress.MusicRequest(text) {
+		text = webaddress.Normalize(text)
+	}
 	original := text
 	var calls []llm.FunctionCall
 	if t.Config.Time {
@@ -138,7 +153,8 @@ func (t *Tools) initialCalls(text string, history bool) []llm.FunctionCall {
 	text = dialogue.Normalize(text)
 	// A request that explicitly combines a page with history must read the page first.
 	web := strings.Contains(text, "https://") || strings.Contains(text, "http://") || strings.Contains(text, "страниц") || strings.Contains(text, "сайт")
-	if t.Config.Web {
+	playback := t.Config.PlaySound && (webaddress.MusicRequest(original) || strings.Contains(text, "воспроизведи") || strings.Contains(text, "проиграй") || strings.Contains(text, "включи аудио"))
+	if t.Config.Web && !playback {
 		if raw := explicitURL.FindString(original); raw != "" {
 			args, _ := json.Marshal(map[string]string{"url": strings.TrimRight(raw, ".,;")})
 			calls = append(calls, llm.FunctionCall{Name: "read_webpage", Arguments: string(args)})

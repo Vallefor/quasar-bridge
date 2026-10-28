@@ -7,6 +7,7 @@ import (
 	"net/netip"
 	"net/url"
 	"os"
+	"slices"
 	"strings"
 	"unicode/utf8"
 
@@ -15,6 +16,7 @@ import (
 	"quasarbridge/internal/dialogue"
 	"quasarbridge/internal/home"
 	"quasarbridge/internal/journal"
+	"quasarbridge/internal/llm"
 )
 
 type progressConfig struct {
@@ -24,26 +26,32 @@ type progressConfig struct {
 }
 
 type config struct {
-	DialogueContext dialogue.Config      `json:"dialogue_context"`
-	LocalProgress   progressConfig       `json:"local_progress"`
-	AssistantTools  assistant.Config     `json:"assistant_tools"`
-	ConversationLog journal.Config       `json:"conversation_log"`
-	Listen          string               `json:"listen"`
-	Upstream        string               `json:"upstream"`
-	TLSCert         string               `json:"tls_cert"`
-	TLSKey          string               `json:"tls_key"`
-	AllowedIPs      []string             `json:"allowed_ips"`
-	Mode            string               `json:"mode"`
-	LLMBaseURL      string               `json:"llm_base_url"`
-	LLMModel        string               `json:"llm_model"`
-	LLMSystemPrompt string               `json:"llm_system_prompt"`
-	HomeWarmArea    string               `json:"home_warm_area"`
-	HomeAssistant   home.AssistConfig    `json:"home_assistant"`
-	Routing         bridge.RoutingConfig `json:"routing"`
+	DialogueContext    dialogue.Config      `json:"dialogue_context"`
+	LocalProgress      progressConfig       `json:"local_progress"`
+	AssistantTools     assistant.Config     `json:"assistant_tools"`
+	ConversationLog    journal.Config       `json:"conversation_log"`
+	Listen             string               `json:"listen"`
+	Upstream           string               `json:"upstream"`
+	TLSCert            string               `json:"tls_cert"`
+	TLSKey             string               `json:"tls_key"`
+	AllowedIPs         []string             `json:"allowed_ips"`
+	Mode               string               `json:"mode"`
+	LLMBaseURL         string               `json:"llm_base_url"`
+	LLMModel           string               `json:"llm_model"`
+	LLMAPI             string               `json:"llm_api"`
+	LLMReasoningEffort string               `json:"llm_reasoning_effort"`
+	LLMMaxOutputTokens int                  `json:"llm_max_output_tokens"`
+	LLMHostedTools     []string             `json:"llm_hosted_tools"`
+	LLMChatParameters  map[string]any       `json:"llm_chat_parameters"`
+	LLMSystemPrompt    string               `json:"llm_system_prompt"`
+	HomeWarmArea       string               `json:"home_warm_area"`
+	HomeAssistant      home.AssistConfig    `json:"home_assistant"`
+	ListenAfterReply   bool                 `json:"listen_after_reply"`
+	Routing            bridge.RoutingConfig `json:"routing"`
 }
 
 func readConfig(path string) (config, error) {
-	cfg := config{DialogueContext: dialogue.DefaultConfig(), Routing: bridge.DefaultRoutingConfig(), ConversationLog: journal.DefaultConfig(), AssistantTools: assistant.DefaultConfig(), LocalProgress: progressConfig{AfterMS: 2000, IntervalMS: 4000}}
+	cfg := config{DialogueContext: dialogue.DefaultConfig(), Routing: bridge.DefaultRoutingConfig(), ConversationLog: journal.DefaultConfig(), AssistantTools: assistant.DefaultConfig(), LocalProgress: progressConfig{AfterMS: 2000, IntervalMS: 4000}, LLMAPI: "chat_completions", LLMMaxOutputTokens: 4096, ListenAfterReply: true}
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return cfg, errors.New("cannot read configuration file")
@@ -57,6 +65,7 @@ func readConfig(path string) (config, error) {
 		"QUASAR_MODE": &cfg.Mode, "QUASAR_LLM_BASE_URL": &cfg.LLMBaseURL,
 		"QUASAR_LLM_MODEL": &cfg.LLMModel, "QUASAR_LLM_SYSTEM_PROMPT": &cfg.LLMSystemPrompt,
 		"QUASAR_HOME_WARM_AREA": &cfg.HomeWarmArea,
+		"QUASAR_LLM_API":        &cfg.LLMAPI, "QUASAR_LLM_REASONING_EFFORT": &cfg.LLMReasoningEffort,
 	} {
 		if value, ok := os.LookupEnv(name); ok {
 			*target = value
@@ -81,6 +90,50 @@ func readConfig(path string) (config, error) {
 	}
 	if cfg.Mode == "" {
 		cfg.Mode = "observe"
+	}
+	if cfg.LLMAPI == "" {
+		cfg.LLMAPI = "chat_completions"
+	}
+	if cfg.LLMAPI != "chat_completions" && cfg.LLMAPI != "responses" {
+		return cfg, errors.New("llm_api must be chat_completions or responses")
+	}
+	if len(cfg.LLMChatParameters) == 0 {
+		cfg.LLMChatParameters = nil
+	} else {
+		if cfg.LLMAPI != "chat_completions" {
+			return cfg, errors.New("llm_chat_parameters requires llm_api chat_completions")
+		}
+		if err := llm.ValidateChatParameters(cfg.LLMChatParameters); err != nil {
+			return cfg, err
+		}
+	}
+	if cfg.LLMMaxOutputTokens <= 0 {
+		return cfg, errors.New("llm_max_output_tokens must be positive")
+	}
+	if cfg.LLMReasoningEffort != "" {
+		if cfg.LLMAPI != "responses" {
+			return cfg, errors.New("llm_reasoning_effort requires llm_api responses")
+		}
+		if !slices.Contains([]string{"none", "minimal", "low", "medium", "high", "xhigh", "max"}, cfg.LLMReasoningEffort) {
+			return cfg, errors.New("invalid llm_reasoning_effort")
+		}
+	}
+	if len(cfg.LLMHostedTools) == 0 {
+		cfg.LLMHostedTools = nil
+	} else {
+		if cfg.LLMAPI != "responses" {
+			return cfg, errors.New("llm_hosted_tools requires llm_api responses")
+		}
+		seen := make(map[string]bool, len(cfg.LLMHostedTools))
+		for _, name := range cfg.LLMHostedTools {
+			if name != "web_search" && name != "code_interpreter" {
+				return cfg, errors.New("llm_hosted_tools supports web_search and code_interpreter")
+			}
+			if seen[name] {
+				return cfg, errors.New("duplicate llm_hosted_tools entry")
+			}
+			seen[name] = true
+		}
 	}
 	if _, _, err := net.SplitHostPort(cfg.Listen); err != nil {
 		return cfg, errors.New("listen must include host and port")

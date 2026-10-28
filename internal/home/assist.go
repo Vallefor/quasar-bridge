@@ -594,14 +594,14 @@ func (a *Assist) Reset(ctx context.Context) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.turns != nil {
-		delete(a.turns, dialogue.SpeakerID(ctx))
+		delete(a.turns, dialogue.SpeakerKey(ctx))
 	}
 }
 
 func (a *Assist) current(ctx context.Context) string {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	turn, ok := a.turns[dialogue.SpeakerID(ctx)]
+	turn, ok := a.turns[dialogue.SpeakerKey(ctx)]
 	if !ok {
 		return ""
 	}
@@ -610,7 +610,7 @@ func (a *Assist) current(ctx context.Context) string {
 		now = a.now()
 	}
 	if now.Sub(turn.at) >= time.Duration(a.Config.TTLSeconds)*time.Second {
-		delete(a.turns, dialogue.SpeakerID(ctx))
+		delete(a.turns, dialogue.SpeakerKey(ctx))
 		return ""
 	}
 	return turn.id
@@ -626,7 +626,7 @@ func (a *Assist) remember(ctx context.Context, id string) {
 	if a.now != nil {
 		now = a.now()
 	}
-	a.turns[dialogue.SpeakerID(ctx)] = assistTurn{id: id, at: now}
+	a.turns[dialogue.SpeakerKey(ctx)] = assistTurn{id: id, at: now}
 }
 
 func spoken(text string) string {

@@ -9,6 +9,7 @@ import (
 	directive "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/directives"
 	response "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/alice_response"
 	header "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/common/event_header"
+	stream "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/events/stream_control"
 	server "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/protocol/server"
 	deferred "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/streaming"
 	"google.golang.org/protobuf/encoding/protowire"
@@ -90,6 +91,9 @@ func (p *nativeRequest) applicationID() string {
 }
 func (n *Native) beginDeferred(p *nativeRequest) error {
 	r := &response.TAliceResponseProto{Header: &response.TAliceResponseProto_THeader{RequestId: new(p.applicationID()), ResponseId: new(p.responseID), DialogId: new(p.request.GetHeader().GetDialogId()), SequenceNumber: new(p.request.GetHeader().GetSequenceNumber())}, VoiceResponse: &response.TAliceResponseProto_TVoiceResponse{HasVoiceResponse: true, OutputSpeech: &response.TAliceResponseProto_TVoiceResponse_TOutputSpeech{Text: new("")}}, Response: &response.TAliceResponseProto_TResponse{IsStreaming: true, Directives: []*directive.TDirective{{Type: "client_action", Name: "tts_play_placeholder"}}}}
+	// Station schedules post-speech listening from the initial stream envelope.
+	// Only retry is guaranteed informational; other routes may start silent media.
+	r.VoiceResponse.ShouldListen = n.ShouldListen && p.listenOnStreamStart
 	m := &server.TServerMessage{Message: &server.TServerMessage_Event{Event: &server.TServerMessage_TEvent{Header: &header.TEventHeader{MessageId: newID(), RefMessageId: p.id}, Event: &server.TServerMessage_TEvent_AliceResponse{AliceResponse: r}}}}
 	b, err := (wire.Frame{Server: m, Prefix: []byte("AAPI")}).Marshal()
 	if err != nil {
@@ -110,13 +114,22 @@ func (n *Native) deferredPart(p *nativeRequest, text string, last bool) error {
 	}
 	p.partial++
 	base := &deferred.TDeferedAliceResponseProto_TBaseResponse{}
+	voice := text
+	if last {
+		silentPlayback := n.hasSilentPlayback(p)
+		base.ShouldListen = n.ShouldListen && !silentPlayback
+		if silentPlayback {
+			voice = ""
+		}
+		base.Directives = n.takeSound(p)
+	}
 	if text != "" {
 		base.Text = new(text)
 	}
 	// Older Station SDKs still consume reserved field 2 (Voice), separately
 	// from Text. Observed cloud responses send speech deltas here.
 	unknown := protowire.AppendTag(nil, 2, protowire.BytesType)
-	unknown = protowire.AppendString(unknown, text)
+	unknown = protowire.AppendString(unknown, voice)
 	base.ProtoReflect().SetUnknown(unknown)
 	r := &deferred.TDeferedAliceResponseProto{RequestId: p.applicationID(), ResponsePartialNum: p.partial, IsLast: last, TDeferredResponse: &deferred.TDeferedAliceResponseProto_BaseResponse{BaseResponse: base}}
 	m := &server.TServerMessage{Message: &server.TServerMessage_Event{Event: &server.TServerMessage_TEvent{Header: &header.TEventHeader{MessageId: newID(), RefMessageId: p.id}, Event: &server.TServerMessage_TEvent_DeferredAliceResponse{DeferredAliceResponse: r}}}}
@@ -124,13 +137,23 @@ func (n *Native) deferredPart(p *nativeRequest, text string, last bool) error {
 	if err != nil {
 		return err
 	}
-	return n.down(p.ctx, websocket.MessageBinary, b)
+	if err := n.down(p.ctx, websocket.MessageBinary, b); err != nil {
+		return err
+	}
+	n.captureDelivered(p, text, last, len(base.Directives) > 0, true)
+	return nil
 }
 func (n *Native) finishDeferred(p *nativeRequest, text string) error {
 	select {
 	case <-p.ctx.Done():
 		return p.ctx.Err()
 	case <-p.progressAudioDone:
+	}
+	if n.hasSilentPlayback(p) {
+		if err := n.finishSilentAudio(p); err != nil {
+			return err
+		}
+		return n.deferredPart(p, text, true)
 	}
 	n.mu.Lock()
 	p.ttsID = newID()
@@ -140,6 +163,24 @@ func (n *Native) finishDeferred(p *nativeRequest, text string) error {
 		return err
 	}
 	return n.synthesize(p, text)
+}
+
+// Content audio must start after the silent Dialog player releases its focus.
+func (n *Native) finishSilentAudio(p *nativeRequest) error {
+	n.mu.Lock()
+	p.audioWaiting = false
+	end := p.audio.finishSilence()
+	streamID := p.audioStream
+	n.mu.Unlock()
+	if err := n.down(p.ctx, websocket.MessageBinary, append(binary.BigEndian.AppendUint32(nil, streamID), end...)); err != nil {
+		return err
+	}
+	m := &server.TServerMessage{Message: &server.TServerMessage_StreamControl{StreamControl: &stream.TStreamControl{MessageId: p.id, StreamId: int64(streamID), Action: &stream.TStreamControl_Close{Close: &stream.TStreamControl_TActionClose{}}}}}
+	b, err := (wire.Frame{Server: m, Prefix: []byte("AAPI")}).Marshal()
+	if err != nil {
+		return err
+	}
+	return n.down(p.ctx, websocket.MessageBinary, b)
 }
 
 // Called under n.mu after the first synthesized segment closes. Keep the audio

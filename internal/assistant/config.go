@@ -3,6 +3,8 @@ package assistant
 
 import (
 	"errors"
+	"net/url"
+	"strings"
 	"time"
 	_ "time/tzdata" // Speaker firmware may not have an IANA zoneinfo database.
 )
@@ -13,6 +15,8 @@ type Config struct {
 	Web              bool              `json:"web"`
 	History          bool              `json:"history"`
 	Time             bool              `json:"time"`
+	PlaySound        bool              `json:"play_sound"`
+	MusicBaseURL     string            `json:"music_base_url,omitempty"`
 	Timezone         string            `json:"timezone"`
 	MaxRounds        int               `json:"max_rounds"`
 	MaxCalls         int               `json:"max_calls"`
@@ -26,6 +30,12 @@ func DefaultConfig() Config {
 	return Config{Enabled: false, Web: true, History: true, Time: true, Timezone: "UTC", MaxRounds: 3, MaxCalls: 4, WebTimeoutMS: 8000, WebMaxBytes: 1 << 20, WebMaxChars: 12000, HistoryMaxScanMB: 16}
 }
 func (c Config) Validate() error {
+	if c.MusicBaseURL != "" {
+		u, err := url.Parse(c.MusicBaseURL)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.ForceQuery || strings.ContainsAny(c.MusicBaseURL, "#\r\n") || (u.Path != "" && u.Path != "/") {
+			return errors.New("assistant_tools.music_base_url must be an HTTP/HTTPS origin without credentials, path, query or fragment")
+		}
+	}
 	if err := validateMCP(c.MCPServers); err != nil {
 		return err
 	}

@@ -18,10 +18,12 @@ import (
 )
 
 type WebResult struct {
-	URL       string `json:"url"`
-	Title     string `json:"title,omitempty"`
-	Text      string `json:"text"`
-	Truncated bool   `json:"truncated,omitzero"`
+	URL       string    `json:"url"`
+	Title     string    `json:"title,omitempty"`
+	Text      string    `json:"text"`
+	Links     []WebLink `json:"links,omitempty"`
+	Audio     []WebLink `json:"audio,omitempty"`
+	Truncated bool      `json:"truncated,omitzero"`
 }
 type WebReader struct {
 	config Config
@@ -37,6 +39,7 @@ func NewWebReader(c Config) *WebReader {
 	transport.MaxIdleConns = 2
 	transport.MaxIdleConnsPerHost = 1
 	transport.IdleConnTimeout = 15 * time.Second
+	transport.ResponseHeaderTimeout = time.Duration(c.WebTimeoutMS) * time.Millisecond
 	w.http = &http.Client{Transport: transport, Timeout: time.Duration(c.WebTimeoutMS) * time.Millisecond, CheckRedirect: func(req *http.Request, via []*http.Request) error {
 		if len(via) >= 4 {
 			return errors.New("web redirect limit exceeded")
@@ -164,6 +167,13 @@ func (w *WebReader) Read(ctx context.Context, raw string) (WebResult, error) {
 	text := string(data)
 	if typ == "text/html" || typ == "application/xhtml+xml" {
 		result.Title, text = htmlText(data, w.config.WebMaxChars)
+		pageURL, _ := url.Parse(result.URL)
+		result.Links, result.Audio = extractPageMedia(data, pageURL)
+	} else if typ == "application/json" {
+		pageURL, _ := url.Parse(result.URL)
+		media := newMediaCollector(pageURL)
+		media.json(data)
+		result.Audio = media.audio
 	}
 	text = strings.Join(strings.Fields(strings.ToValidUTF8(text, "�")), " ")
 	if runes := []rune(text); len(runes) > w.config.WebMaxChars {
@@ -175,7 +185,7 @@ func (w *WebReader) Read(ctx context.Context, raw string) (WebResult, error) {
 		result.Title = string(title[:300])
 	}
 	result.Text = text
-	if text == "" {
+	if text == "" && len(result.Audio) == 0 && len(result.Links) == 0 {
 		return WebResult{}, errors.New("web page contains no readable text")
 	}
 	return result, nil

@@ -42,6 +42,42 @@ func aa(m proto.Message) []byte {
 	return append([]byte("AAPI"), data...)
 }
 
+func TestNativeListenAfterReply(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		set  *bool
+		want bool
+	}{
+		{"default", nil, true},
+		{"enabled", new(true), true},
+		{"disabled", new(false), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			n, _, down := soundSession(t, resolverFunc(func(context.Context, string) (Resolution, error) {
+				return Resolution{Route: "llm", Answer: "Готово."}, nil
+			}))
+			if tc.set != nil {
+				n.ShouldListen = *tc.set
+			}
+			input := wire.Decode(soundInput("follow-up"), wire.ClientToServer).Client
+			e := input.GetEvent()
+			e.Event = &client.TClientMessage_TEvent_VoiceInput{VoiceInput: e.GetTextInput()}
+			if err := n.Client(t.Context(), websocket.MessageBinary, aa(input)); err != nil {
+				t.Fatal(err)
+			}
+			for {
+				f := nextSoundFrame(t, down)
+				if r := f.Server.GetEvent().GetAliceResponse(); r != nil {
+					if got := r.GetVoiceResponse().GetShouldListen(); got != tc.want {
+						t.Fatalf("should_listen=%v, want %v", got, tc.want)
+					}
+					break
+				}
+			}
+		})
+	}
+}
+
 func TestNativeRoutesBeforeCloudExecutionAndCorrelatesTTS(t *testing.T) {
 	for _, route := range []string{"yandex", "llm", "no_continue", "home_disabled"} {
 		t.Run(route, func(t *testing.T) {
@@ -158,6 +194,9 @@ func TestNativeRoutesBeforeCloudExecutionAndCorrelatesTTS(t *testing.T) {
 				f := wire.Decode(data, wire.ServerToClient)
 				if f.Kind() == "AliceResponse" {
 					gotAnswer = true
+					if got := f.Server.GetEvent().GetAliceResponse().GetVoiceResponse().GetShouldListen(); got != (route == "llm") {
+						t.Fatalf("should_listen=%v for route %s", got, route)
+					}
 					text := f.Server.GetEvent().GetAliceResponse().GetVoiceResponse().GetOutputSpeech().GetText()
 					want := "Ответ своей модели"
 					if route != "llm" {
@@ -482,6 +521,36 @@ func TestNativeStopPhraseCancelsWithoutReply(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestNativeStandalonePlaybackStopReachesYandex(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	up := make(chan []byte, 8)
+	down := make(chan []byte, 8)
+	n := NewNative(ctx, func(_ context.Context, _ websocket.MessageType, b []byte) error { up <- b; return nil }, func(_ context.Context, _ websocket.MessageType, b []byte) error { down <- b; return nil }, &Engine{})
+	defer n.Close()
+	n.GateText = true
+	input := aa(&client.TClientMessage{Message: &client.TClientMessage_Event{Event: &client.TClientMessage_TEvent{Header: &header.TEventHeader{MessageId: "play-stop"}, Event: &client.TClientMessage_TEvent_TextInput{TextInput: &request.TAliceRequestProto{Request: &request.TAliceRequestProto_TRequest{Event: &common.TEvent{Text: new("Алиса, хватит!")}}}}}}})
+	if err := n.Client(ctx, websocket.MessageBinary, input); err != nil {
+		t.Fatal(err)
+	}
+	if kind := wire.Decode(<-up, wire.ClientToServer).Kind(); kind == "" {
+		t.Fatal("no gated input")
+	}
+	select {
+	case b := <-up:
+		if kind := wire.Decode(b, wire.ClientToServer).Kind(); kind != "ContinueRequest" {
+			t.Fatalf("kind=%s", kind)
+		}
+	case <-ctx.Done():
+		t.Fatal("standalone playback stop was not sent to Yandex")
+	}
+	select {
+	case b := <-down:
+		t.Fatalf("unexpected downstream %s", wire.Decode(b, wire.ServerToClient).Kind())
+	default:
 	}
 }
 

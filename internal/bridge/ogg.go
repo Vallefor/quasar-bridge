@@ -136,6 +136,11 @@ func (o *oggSpeech) silence() []byte {
 	return out
 }
 func (o *oggSpeech) finish() []byte { return o.flushPending(4, o.trim) }
+func (o *oggSpeech) finishSilence() []byte {
+	out := o.flushPending(0, 0)
+	o.granule += 960
+	return append(out, o.page([]byte{0xf8, 0xff, 0xfe}, 4, o.granule)...)
+}
 func (o *oggSpeech) flushPending(flags byte, trim uint64) []byte {
 	if o.pending == nil {
 		return nil
