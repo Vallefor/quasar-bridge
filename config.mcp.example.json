@@ -15,6 +15,7 @@
   "llm_system_prompt": "",
   "home_warm_area": "",
   "listen_after_reply": true,
+  "spotter_wait_ms": 1500,
   "home_assistant": {
     "url": "",
     "agent_id": "",
@@ -22,7 +23,8 @@
     "device_id": "",
     "language": "ru",
     "timeout_ms": 20000,
-    "ttl_seconds": 300
+    "ttl_seconds": 300,
+    "continue_conversation": false
   },
   "routing": {
     "rules": [

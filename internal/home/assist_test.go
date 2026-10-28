@@ -178,6 +178,37 @@ func (p *plannerCalls) Handle(context.Context, string) (string, error) {
 	return "из планировщика", nil
 }
 
+func TestGatewayContinueConversationDefaultsOff(t *testing.T) {
+	token := "token"
+	var keep atomic.Bool
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		acceptAssist(t, w, r, token, func(map[string]any) []any {
+			return intentMessagesContinue("c", "action_done", "Свет включён", true, keep.Load())
+		}, nil)
+	}))
+	defer s.Close()
+	planner := &plannerCalls{}
+	for _, tc := range []struct {
+		name   string
+		config bool
+		event  bool
+		want   bool
+	}{
+		{"default ignores pipeline flag", false, true, false},
+		{"enabled follows pipeline", true, true, true},
+		{"enabled stays closed", true, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			keep.Store(tc.event)
+			g := &Gateway{Assist: &Assist{Config: AssistConfig{URL: s.URL, Language: "ru", TimeoutMS: 20000, TTLSeconds: 300, ContinueConversation: tc.config}, Token: token}, Devices: planner}
+			answer, listen, err := g.Turn(t.Context(), "включи свет")
+			if err != nil || answer != "Свет включён" || listen == nil || *listen != tc.want || planner.n != 0 {
+				t.Fatalf("answer=%q listen=%v err=%v calls=%d", answer, listen, err, planner.n)
+			}
+		})
+	}
+}
+
 func TestGatewaySpeaksAssistantAndFallsBackOnlyOnFailure(t *testing.T) {
 	token := "token"
 	var mode atomic.Value
@@ -319,6 +350,10 @@ func acceptAssist(t *testing.T, w http.ResponseWriter, r *http.Request, token st
 }
 
 func intentMessages(conv, kind, speech string, local bool) []any {
+	return intentMessagesContinue(conv, kind, speech, local, false)
+}
+
+func intentMessagesContinue(conv, kind, speech string, local, continueConversation bool) []any {
 	return []any{
 		map[string]any{"type": "result", "success": true, "result": nil},
 		map[string]any{"type": "event", "event": map[string]any{"type": "run-start", "data": map[string]any{"conversation_id": nil, "pipeline": "hall"}}},
@@ -326,7 +361,8 @@ func intentMessages(conv, kind, speech string, local bool) []any {
 		map[string]any{"type": "event", "event": map[string]any{"type": "intent-end", "data": map[string]any{
 			"processed_locally": local,
 			"intent_output": map[string]any{
-				"conversation_id": conv,
+				"conversation_id":       conv,
+				"continue_conversation": continueConversation,
 				"response": map[string]any{
 					"response_type": kind,
 					"speech":        map[string]any{"plain": map[string]any{"speech": speech}},

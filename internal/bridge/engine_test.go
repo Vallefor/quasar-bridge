@@ -19,6 +19,22 @@ type homeFunc func(context.Context, string) (string, error)
 
 func (f homeFunc) Handle(ctx context.Context, s string) (string, error) { return f(ctx, s) }
 
+type listenHome struct{ listen *bool }
+
+func (h listenHome) Handle(context.Context, string) (string, error) { return "Включено", nil }
+func (h listenHome) Turn(context.Context, string) (string, *bool, error) {
+	return "Включено", h.listen, nil
+}
+
+func TestHomeTurnSuppliesListenOverride(t *testing.T) {
+	off := false
+	engine := Engine{Home: listenHome{listen: &off}}
+	got, err := engine.Resolve(t.Context(), "Включи свет в кабинете")
+	if err != nil || got.Route != "home" || got.Listen == nil || *got.Listen {
+		t.Fatalf("result=%+v err=%v", got, err)
+	}
+}
+
 func TestFlashlightPhraseRoutesToHome(t *testing.T) {
 	e := &Engine{Home: homeFunc(func(context.Context, string) (string, error) { return "", nil })}
 	got := e.Decide(t.Context(), "включи фонарики")

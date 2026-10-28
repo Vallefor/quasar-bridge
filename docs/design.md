@@ -92,10 +92,28 @@ only `QUASAR_HOME_ASSISTANT_TOKEN`. An empty URL disables the client and does
 not require a token. A successful turn is not planned again through MCP. A
 transport failure or `response_type` of `error` falls back to the MCP planner
 when that client is configured. The conversation id is kept per speaker until
-`ttl_seconds` or a dialogue reset. Elliptical follow-ups during an active
+`ttl_seconds` or a dialogue reset. `continue_conversation` defaults to false.
+An Assist answer then sets Alice `ShouldListen` false, including when
+`listen_after_reply` is true and when the pipeline event asks to continue.
+True follows `intent_output.continue_conversation` from `intent-end` and
+ignores `listen_after_reply` for that answer. Planner fallback does not
+set the override. Elliptical follow-ups during an active
 conversation route to home after explicit routing rules. Redirects are
 refused. URL, token and request text are not logged. Changes require a
 process restart.
+
+Ruling: `spotter_wait_ms` defaults to 1500 and requires a restart. Zero disables
+the wait. A voice request routed to home, llm, music, or playback waits for
+`SpotterValidation` before any local work. `Ok` runs the route.
+`SpottingRejected` or `CanceledCauseOfMultiactivation` does not call the
+executor: the cloud receives UserStop and the speaker receives a voiceless
+completion. If no frame arrives, the route runs after the wait, so one speaker
+in the room still answers. A rejection that arrives after the wait and before
+local speech starts cancels that work and completes the dialog the same way.
+The Yandex route does not wait. A validation frame that arrived early is
+forwarded when that route is chosen, and a later frame is forwarded as it
+arrives. Text input does not wait. The log records the result enum and the
+multiactivation flag, not the phrase. Values outside 0–5000 are rejected.
 
 Ruling: `routing.unknown_to_home` defaults to false. When true, text that
 matches no rule goes to home without the classifier. Phrases that ask the

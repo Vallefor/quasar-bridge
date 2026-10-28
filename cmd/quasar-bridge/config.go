@@ -47,11 +47,12 @@ type config struct {
 	HomeWarmArea       string               `json:"home_warm_area"`
 	HomeAssistant      home.AssistConfig    `json:"home_assistant"`
 	ListenAfterReply   bool                 `json:"listen_after_reply"`
+	SpotterWaitMS      int                  `json:"spotter_wait_ms"`
 	Routing            bridge.RoutingConfig `json:"routing"`
 }
 
 func readConfig(path string) (config, error) {
-	cfg := config{DialogueContext: dialogue.DefaultConfig(), Routing: bridge.DefaultRoutingConfig(), ConversationLog: journal.DefaultConfig(), AssistantTools: assistant.DefaultConfig(), LocalProgress: progressConfig{AfterMS: 2000, IntervalMS: 4000}, LLMAPI: "chat_completions", LLMMaxOutputTokens: 4096, ListenAfterReply: true}
+	cfg := config{DialogueContext: dialogue.DefaultConfig(), Routing: bridge.DefaultRoutingConfig(), ConversationLog: journal.DefaultConfig(), AssistantTools: assistant.DefaultConfig(), LocalProgress: progressConfig{AfterMS: 2000, IntervalMS: 4000}, LLMAPI: "chat_completions", LLMMaxOutputTokens: 4096, ListenAfterReply: true, SpotterWaitMS: 1500}
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return cfg, errors.New("cannot read configuration file")
@@ -179,6 +180,9 @@ func readConfig(path string) (config, error) {
 	}
 	if cfg.LocalProgress.AfterMS < 100 || cfg.LocalProgress.AfterMS > 10000 || cfg.LocalProgress.IntervalMS < 1000 || cfg.LocalProgress.IntervalMS > 10000 {
 		return cfg, errors.New("invalid local_progress timing")
+	}
+	if cfg.SpotterWaitMS < 0 || cfg.SpotterWaitMS > 5000 {
+		return cfg, errors.New("spotter_wait_ms must be from 0 to 5000")
 	}
 	if err := cfg.DialogueContext.Validate(); err != nil {
 		return cfg, err

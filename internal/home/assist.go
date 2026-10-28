@@ -21,13 +21,14 @@ import (
 )
 
 type AssistConfig struct {
-	URL        string `json:"url"`
-	AgentID    string `json:"agent_id"`
-	PipelineID string `json:"pipeline_id"`
-	DeviceID   string `json:"device_id"`
-	Language   string `json:"language"`
-	TimeoutMS  int    `json:"timeout_ms"`
-	TTLSeconds int    `json:"ttl_seconds"`
+	URL                  string `json:"url"`
+	AgentID              string `json:"agent_id"`
+	PipelineID           string `json:"pipeline_id"`
+	DeviceID             string `json:"device_id"`
+	Language             string `json:"language"`
+	TimeoutMS            int    `json:"timeout_ms"`
+	TTLSeconds           int    `json:"ttl_seconds"`
+	ContinueConversation bool   `json:"continue_conversation"`
 }
 
 func (c *AssistConfig) Normalize() {
@@ -109,8 +110,9 @@ type assistTurn struct {
 }
 
 type assistReply struct {
-	Speech string
-	Type   string
+	Speech   string
+	Type     string
+	Continue bool
 }
 
 func (a *Assist) Process(ctx context.Context, text string) (assistReply, error) {
@@ -417,8 +419,9 @@ type pipelineMsg struct {
 			ProcessedLocally *bool `json:"processed_locally"`
 			ConversationID   any   `json:"conversation_id"`
 			IntentOutput     struct {
-				ConversationID any `json:"conversation_id"`
-				Response       struct {
+				ConversationID       any  `json:"conversation_id"`
+				ContinueConversation bool `json:"continue_conversation"`
+				Response             struct {
 					ResponseType string `json:"response_type"`
 					Speech       struct {
 						Plain struct {
@@ -512,8 +515,9 @@ func applyPipeline(msg pipelineMsg, run *assistRun) (bool, error) {
 			}
 			run.local = msg.Event.Data.ProcessedLocally
 			run.reply = assistReply{
-				Speech: spoken(msg.Event.Data.IntentOutput.Response.Speech.Plain.Speech),
-				Type:   msg.Event.Data.IntentOutput.Response.ResponseType,
+				Speech:   spoken(msg.Event.Data.IntentOutput.Response.Speech.Plain.Speech),
+				Type:     msg.Event.Data.IntentOutput.Response.ResponseType,
+				Continue: msg.Event.Data.IntentOutput.ContinueConversation,
 			}
 			if run.reply.Type == "" {
 				run.reply.Type = "query_answer"
@@ -652,31 +656,50 @@ type Gateway struct {
 }
 
 func (g *Gateway) Handle(ctx context.Context, text string) (string, error) {
+	text, _, err := g.Turn(ctx, text)
+	return text, err
+}
+
+// Turn returns the spoken answer. The bool is non-nil only for an Assist
+// pipeline answer: false closes the speaker microphone. A nil bool leaves
+// the caller's listen-after-reply policy unchanged, including planner fallback.
+func (g *Gateway) Turn(ctx context.Context, text string) (string, *bool, error) {
 	if g.Assist != nil {
 		reply, err := g.Assist.Process(ctx, text)
 		if err == nil && reply.Type != "error" {
-			if reply.Speech == "" {
-				return "Готово.", nil
-			}
-			return reply.Speech, nil
+			listen := g.keepListening(reply)
+			return spokenAssist(reply), &listen, nil
 		}
 		if err != nil && ctx.Err() != nil {
-			return "", err
+			return "", nil, err
 		}
 		if g.Devices == nil {
 			if err != nil {
-				return "", err
+				return "", nil, err
 			}
 			if reply.Speech != "" {
-				return reply.Speech, nil
+				listen := g.keepListening(reply)
+				return reply.Speech, &listen, nil
 			}
-			return "", errors.New("home assistant did not answer")
+			return "", nil, errors.New("home assistant did not answer")
 		}
 	}
 	if g.Devices == nil {
-		return "", errors.New("home assistant is not configured")
+		return "", nil, errors.New("home assistant is not configured")
 	}
-	return g.Devices.Handle(ctx, text)
+	answer, err := g.Devices.Handle(ctx, text)
+	return answer, nil, err
+}
+
+func (g *Gateway) keepListening(reply assistReply) bool {
+	return g.Assist.Config.ContinueConversation && reply.Continue
+}
+
+func spokenAssist(reply assistReply) string {
+	if reply.Speech == "" {
+		return "Готово."
+	}
+	return reply.Speech
 }
 
 func (g *Gateway) Active(ctx context.Context) bool {

@@ -126,6 +126,14 @@ func (e *Engine) ResolveDecision(ctx context.Context, text string, decision Rout
 		if e.Home == nil {
 			return Resolution{Route: "yandex"}, nil
 		}
+		if turn, ok := e.Home.(interface {
+			Turn(context.Context, string) (string, *bool, error)
+		}); ok {
+			answer, listen, err := turn.Turn(ctx, text)
+			result.Answer = answer
+			result.Listen = listen
+			return result, err
+		}
 		answer, err := e.Home.Handle(ctx, text)
 		result.Answer = answer
 		return result, err

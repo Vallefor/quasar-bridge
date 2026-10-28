@@ -84,6 +84,43 @@ func configFile(t *testing.T, body string) string {
 	return p
 }
 
+func TestSpotterWaitConfiguration(t *testing.T) {
+	cfg, err := readConfig(configFile(t, `{"mode":"observe"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.SpotterWaitMS != 1500 {
+		t.Fatalf("spotter_wait_ms=%d", cfg.SpotterWaitMS)
+	}
+	cfg, err = readConfig(configFile(t, `{"mode":"observe","spotter_wait_ms":0}`))
+	if err != nil || cfg.SpotterWaitMS != 0 {
+		t.Fatalf("explicit zero rejected: %v %#v", err, cfg.SpotterWaitMS)
+	}
+	for _, body := range []string{`{"mode":"observe","spotter_wait_ms":-1}`, `{"mode":"observe","spotter_wait_ms":5001}`} {
+		if _, err := readConfig(configFile(t, body)); err == nil {
+			t.Fatalf("invalid %s accepted", body)
+		}
+	}
+}
+
+func TestReloadSpotterWaitRequiresRestart(t *testing.T) {
+	path := configFile(t, `{}`)
+	initial, err := readConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine := new(bridge.Engine)
+	if err := engine.SetRouting(initial.Routing); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(`{"spotter_wait_ms":0}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := reloadRouting(path, initial, engine); err == nil || !strings.Contains(err.Error(), "restart required") {
+		t.Fatalf("changed spotter_wait_ms accepted: %v", err)
+	}
+}
+
 func TestReadConfigAcceptsListenAfterReply(t *testing.T) {
 	for _, tc := range []struct {
 		body string
@@ -174,7 +211,11 @@ func TestHomeAssistantConversationConfig(t *testing.T) {
 	}
 	t.Setenv("QUASAR_HOME_ASSISTANT_TOKEN", "token")
 	cfg, err = readConfig(configFile(t, `{"home_assistant":{"url":"http://ha.example.invalid:8123/"}}`))
-	if err != nil || cfg.HomeAssistant.URL != "http://ha.example.invalid:8123" || cfg.HomeAssistant.Language != "ru" || cfg.HomeAssistant.TimeoutMS != 20000 || cfg.HomeAssistant.TTLSeconds != 300 {
+	if err != nil || cfg.HomeAssistant.URL != "http://ha.example.invalid:8123" || cfg.HomeAssistant.Language != "ru" || cfg.HomeAssistant.TimeoutMS != 20000 || cfg.HomeAssistant.TTLSeconds != 300 || cfg.HomeAssistant.ContinueConversation {
+		t.Fatalf("%+v %v", cfg.HomeAssistant, err)
+	}
+	cfg, err = readConfig(configFile(t, `{"home_assistant":{"url":"http://ha.example.invalid:8123","continue_conversation":true}}`))
+	if err != nil || !cfg.HomeAssistant.ContinueConversation {
 		t.Fatalf("%+v %v", cfg.HomeAssistant, err)
 	}
 	t.Run("env", func(t *testing.T) {
