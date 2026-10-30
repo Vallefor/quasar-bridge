@@ -49,7 +49,7 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 1' HUP INT TERM
 stage=$(mktemp -d "$state/.install.XXXXXX")
-for name in bin start.sh control.sh install.sh uninstall.sh firmware.sh S98quasar-bridge config.device.example.json ARCH VERSION LICENSE NOTICE THIRD_PARTY_NOTICES; do
+for name in bin start.sh control.sh install.sh setup.sh uninstall.sh firmware.sh S98quasar-bridge config.device.example.json ARCH VERSION LICENSE NOTICE THIRD_PARTY_NOTICES; do
  cp -R "$package/$name" "$stage/$name"
 done
 chmod 0755 "$stage/"*.sh "$stage/bin/quasar-bridge"

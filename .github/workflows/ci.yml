@@ -29,7 +29,7 @@ jobs:
       - run: python3 scripts/test-yap.py
       - name: Check shell syntax
         run: |
-          for script in packaging/yam/*.sh packaging/yam/S98quasar-yam packaging/speaker/*.sh packaging/speaker/S98quasar-bridge; do
+          for script in install.sh packaging/yam/*.sh packaging/yam/S98quasar-yam packaging/speaker/*.sh packaging/speaker/S98quasar-bridge; do
             sh -n "$script"
           done
       - name: Test standalone installation with BusyBox
@@ -47,12 +47,14 @@ jobs:
               python3 scripts/build-speaker-package.py --arch "$arch"
             fi
           done
+          cp install.sh dist/install.sh
       - name: Keep release assets
         if: inputs.upload-speaker
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: speaker-release
           path: |
+            dist/install.sh
             dist/*.tar.gz
             dist/*.tar.gz.sha256
           if-no-files-found: error

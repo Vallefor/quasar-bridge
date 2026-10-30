@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Package and BusyBox installation regression checks; no speaker required."""
 import hashlib
+import http.server
 import os
 from pathlib import Path
 import json
@@ -9,7 +10,10 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import threading
 import unittest
+import time
+import urllib.request
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -31,7 +35,7 @@ class PackageTest(unittest.TestCase):
                 with tarfile.open(output) as archive:
                     self.assertEqual(set(archive.getnames()), {
                         "bin/quasar-bridge", "start.sh", "control.sh", "install.sh",
-                        "uninstall.sh", "S98quasar-bridge", "firmware.sh",
+                        "uninstall.sh", "setup.sh", "S98quasar-bridge", "firmware.sh",
                         "config.device.example.json", "ARCH", "VERSION",
                         "LICENSE", "NOTICE", "THIRD_PARTY_NOTICES",
                     })
@@ -86,9 +90,9 @@ class InstallationTest(unittest.TestCase):
             self.env["PATH"] = str(shim) + os.pathsep + self.env["PATH"]
         self.addCleanup(self.stop)
 
-    def run_script(self, path, *args, ok=True):
+    def run_script(self, path, *args, ok=True, input_text=None):
         result = subprocess.run(["sh", str(path), *args], env=self.env,
-                                capture_output=True, text=True, timeout=45)
+                                capture_output=True, text=True, timeout=45, input=input_text)
         if ok:
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         else:
@@ -208,6 +212,156 @@ class InstallationTest(unittest.TestCase):
         self.control("rollback")  # Recovery also works when the bridge is down.
         self.assertEqual(json.loads(firmware.read_text()), original)
         self.assertFalse((self.state / "endpoint-backup.json").exists())
+
+    def serve(self, handler):
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        return f"http://127.0.0.1:{server.server_port}"
+
+    def serve_directory(self, directory):
+        class Handler(http.server.SimpleHTTPRequestHandler):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, directory=str(directory), **kwargs)
+
+            def log_message(self, *args):
+                pass
+
+        return self.serve(Handler)
+
+    def test_download_verifies_checksum_before_running_setup(self):
+        release = self.root / "release"
+        release.mkdir()
+        setup = self.root / "setup.sh"
+        setup.write_text('#!/bin/sh\ntouch "$QUASAR_DATA_DIR/download-complete"\n')
+        self.state.mkdir()
+        arch = (self.package / "ARCH").read_text().strip()
+        archive = release / f"quasar-bridge-linux-{arch}.tar.gz"
+        with tarfile.open(archive, "w:gz") as tar:
+            tar.add(setup, arcname="setup.sh")
+        checksum = archive.with_suffix(".gz.sha256")
+        checksum.write_text(f"{hashlib.sha256(archive.read_bytes()).hexdigest()}  {archive.name}\n")
+
+        self.env["QUASAR_RELEASE_URL"] = self.serve_directory(release)
+        self.run_script(ROOT / "install.sh")
+        marker = self.state / "download-complete"
+        self.assertTrue(marker.exists())
+        marker.unlink()
+        checksum.write_text(f"{'0' * 64}  {archive.name}\n")
+        self.run_script(ROOT / "install.sh", ok=False)
+        self.assertFalse(marker.exists())
+
+    def backend_url(self):
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                self.rfile.read(int(self.headers["Content-Length"]))
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(b'{"choices":[{"message":{"content":"ok"}}]}')
+
+            def log_message(self, *args):
+                pass
+
+        return self.serve(Handler) + "/v1"
+
+    def test_setup_configures_checks_backend_and_applies_endpoint_without_reboot(self):
+        url = self.backend_url()
+        firmware = self.root / "firmware.json"
+        firmware.write_text('{"aliced":{"uniProxyUrl":"wss://example.invalid/uni.ws"}}')
+        self.env["QUASAR_DEVICE_CONFIG"] = str(firmware)
+        release = self.root / "release"
+        release.mkdir()
+        arch = (self.package / "ARCH").read_text().strip()
+        archive = release / f"quasar-bridge-linux-{arch}.tar.gz"
+        with tarfile.open(archive, "w:gz") as tar:
+            for member in self.package.iterdir():
+                tar.add(member, arcname=member.name)
+        archive.with_suffix(".gz.sha256").write_text(
+            f"{hashlib.sha256(archive.read_bytes()).hexdigest()}  {archive.name}\n")
+        self.env["QUASAR_RELEASE_URL"] = self.serve_directory(release)
+        key = "fixture'\"\\$`token"
+        result = self.run_script(ROOT / "install.sh",
+                                 input_text=f"{url}\nfixture-model\n{key}\n1\n\ny\nn\n")
+        self.assertNotIn(key, result.stdout + result.stderr)
+        self.control("status")
+        self.assertEqual(json.loads(firmware.read_text())["aliced"]["uniProxyUrl"],
+                         "ws://127.0.0.1:8443/uni.ws")
+        env_file = self.state / "runtime.env"
+        restored_key = subprocess.check_output([
+            "sh", "-c", '. "$1"; printf "%s" "$QUASAR_LLM_API_KEY"', "sh", str(env_file),
+        ], text=True)
+        self.assertEqual(restored_key, key)
+        original = env_file.read_bytes()
+        self.run_script(ROOT / "install.sh", input_text="n\n")
+        self.assertEqual(env_file.read_bytes(), original)
+
+    def test_setup_migrates_only_the_legacy_yam_package_and_process(self):
+        self.state.mkdir()
+        config = {"listen": "127.0.0.1:8443", "mode": "observe",
+                  "llm_base_url": self.backend_url(), "llm_model": "fixture-model"}
+        (self.state / "config.json").write_text(json.dumps(config))
+        legacy = self.root / "yam/plugins/quasar-bridge"
+        shutil.copytree(self.package, legacy)
+        other = self.root / "yam/plugins/other-app"
+        other.mkdir()
+        (other / "keep").write_text("unchanged")
+        self.env["QUASAR_YAM_PACKAGE_DIR"] = str(legacy)
+        process = subprocess.Popen(["sh", str(legacy / "start.sh")], env=self.env,
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            for _ in range(50):
+                try:
+                    with urllib.request.urlopen("http://127.0.0.1:8443/healthz", timeout=1):
+                        break
+                except OSError:
+                    time.sleep(0.1)
+            else:
+                self.fail("legacy fixture did not start")
+            self.run_script(self.package / "setup.sh", input_text="n\ny\nn\n")
+            process.wait(timeout=5)
+            self.control("status")
+            self.assertFalse(legacy.exists())
+            self.assertTrue((self.state / "yam-package.backup/bin/quasar-bridge").exists())
+            self.assertEqual((other / "keep").read_text(), "unchanged")
+        finally:
+            if process.poll() is None:
+                process.terminate()
+                process.wait(timeout=5)
+
+    def test_failed_backend_setup_restores_existing_settings(self):
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                self.rfile.read(int(self.headers["Content-Length"]))
+                self.send_response(401)
+                self.end_headers()
+
+            def log_message(self, *args):
+                pass
+
+        self.install()
+        config = self.state / "config.json"
+        original = config.read_bytes()
+        runtime = self.state / "runtime.env"
+        runtime.write_text("KEEP_FIXTURE=yes\n")
+        url = self.serve(Handler) + "/v1"
+        self.run_script(self.package / "setup.sh",
+                        input_text=f"y\n{url}\nfixture-model\nfixture-key\n1\n\nn\n", ok=False)
+        self.assertEqual(config.read_bytes(), original)
+        self.assertEqual(runtime.read_text(), "KEEP_FIXTURE=yes\n")
+        self.control("status")
+
+    def test_cancelled_setup_keeps_existing_configuration_and_running_service(self):
+        self.install()
+        config = self.state / "config.json"
+        original = config.read_bytes()
+        old_pid = (self.state / "bridge.pid").read_text()
+        self.run_script(self.package / "setup.sh", input_text="y\n", ok=False)
+        self.assertEqual(config.read_bytes(), original)
+        self.assertEqual((self.state / "bridge.pid").read_text(), old_pid)
+        self.control("status")
 
 
 if __name__ == "__main__":

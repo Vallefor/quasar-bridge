@@ -11,7 +11,7 @@ import tarfile
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
-PAYLOAD = ("start.sh", "control.sh", "install.sh", "uninstall.sh",
+PAYLOAD = ("start.sh", "control.sh", "install.sh", "setup.sh", "uninstall.sh",
            "S98quasar-bridge", "firmware.sh", "config.device.example.json")
 
 
@@ -19,7 +19,7 @@ def build(arch="arm64", output=None, binary=None, tag=None):
     if tag is not None and not re.fullmatch(r"v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)", tag):
         raise ValueError("release tag must be vMAJOR.MINOR.PATCH")
     version = tag[1:] if tag else "dev"
-    output = Path(output or ROOT / f"dist/quasar-bridge-{version}-linux-{arch}.tar.gz").resolve()
+    output = Path(output or ROOT / f"dist/quasar-bridge-linux-{arch}.tar.gz").resolve()
     with tempfile.TemporaryDirectory(prefix="quasar-speaker-") as tmp:
         executable = Path(binary).resolve() if binary else Path(tmp) / "quasar-bridge"
         if not binary:
