@@ -64,7 +64,7 @@ if [ -d "$state/app" ]; then
  sh "$state/app/control.sh" stop
  had_old=true
 fi
-if wget -q -T 2 -t 1 -O /dev/null http://127.0.0.1:8443/healthz; then
+if wget -q -T 2 -t 1 -O /dev/null http://127.0.0.1:8443/healthz 2>/dev/null; then
  fail 'An unmanaged bridge is still running. Stop the YAM/manual instance and disable its autostart first.'
 fi
 rm -rf "$state/app.previous"

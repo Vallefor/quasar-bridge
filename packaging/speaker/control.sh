@@ -9,7 +9,7 @@ pidfile=$state/bridge.pid
 lock=/tmp/quasar-bridge-service.lock
 health=http://127.0.0.1:8443/healthz
 fail() { echo "$*" >&2; exit 1; }
-healthy() { wget -q -T 2 -t 1 -O /dev/null "$health"; }
+healthy() { wget -q -T 2 -t 1 -O /dev/null "$health" 2>/dev/null; }
 running() {
  test -s "$pidfile" || return 1
  pid=$(cat "$pidfile")
