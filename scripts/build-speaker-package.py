@@ -12,7 +12,7 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 PAYLOAD = ("start.sh", "control.sh", "install.sh", "setup.sh", "uninstall.sh",
-           "S98quasar-bridge", "firmware.sh", "config.device.example.json")
+           "S96quasar-bridge", "firmware.sh", "config.device.example.json")
 
 
 def build(arch="arm64", output=None, binary=None, tag=None):

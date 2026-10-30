@@ -16,7 +16,7 @@ mkdir "$state/.install-lock" 2>/dev/null || { echo 'Another installation operati
 trap 'firmware_restore; rmdir "$state/.install-lock"' EXIT
 trap 'exit 1' HUP INT TERM
 sh "$package/control.sh" stop
-hook=$init/S98quasar-bridge
+hook=$init/S96quasar-bridge
 if [ -e "$hook" ]; then
  grep -q 'quasar-bridge standalone init hook' "$hook" || { echo 'Unrelated boot hook; inspect it first.' >&2; exit 1; }
  firmware_writable

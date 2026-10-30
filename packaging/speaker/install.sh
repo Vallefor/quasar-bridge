@@ -15,9 +15,9 @@ case "$(uname -m):$(cat "$package/ARCH")" in
  *) fail 'Archive architecture does not match this speaker.' ;;
 esac
 test -d "$init" || fail 'No init.d directory; this firmware needs a different boot hook.'
-hook=$init/S98quasar-bridge
+hook=$init/S96quasar-bridge
 if [ -e "$hook" ] && ! grep -q 'quasar-bridge standalone init hook' "$hook"; then
- fail 'An unrelated S98quasar-bridge hook exists; inspect it first.'
+ fail 'An unrelated S96quasar-bridge hook exists; inspect it first.'
 fi
 mkdir -p "$state"
 chmod 0700 "$state"
@@ -49,7 +49,7 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 1' HUP INT TERM
 stage=$(mktemp -d "$state/.install.XXXXXX")
-for name in bin start.sh control.sh install.sh setup.sh uninstall.sh firmware.sh S98quasar-bridge config.device.example.json ARCH VERSION LICENSE NOTICE THIRD_PARTY_NOTICES; do
+for name in bin start.sh control.sh install.sh setup.sh uninstall.sh firmware.sh S96quasar-bridge config.device.example.json ARCH VERSION LICENSE NOTICE THIRD_PARTY_NOTICES; do
  cp -R "$package/$name" "$stage/$name"
 done
 chmod 0755 "$stage/"*.sh "$stage/bin/quasar-bridge"
@@ -75,7 +75,7 @@ stage=
 sh "$state/app/control.sh" start
 # Publish the boot hook only after the new listener is healthy.
 firmware_writable
-sed "s|@STATE@|$state|" "$state/app/S98quasar-bridge" > "$hook.new"
+sed "s|@STATE@|$state|" "$state/app/S96quasar-bridge" > "$hook.new"
 chmod 0755 "$hook.new"
 mv -f "$hook.new" "$hook"
 firmware_restore

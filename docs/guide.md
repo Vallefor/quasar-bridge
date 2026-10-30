@@ -485,7 +485,12 @@ CI собирает оба архива; релиз по тегу публику
 
 ### Ручная установка архива
 
-Обычная установка выполняется одной командой из README. Ниже — вариант для
+Обычная установка выполняется одной командой с компьютера из README.
+Компьютер скачивает архив, затем передаёт и запускает его по SSH. Это работает
+и на свежей MIDI: её BusyBox wget не поддерживает HTTPS, а tar — флаг `-z`;
+поэтому установщик использует отдельный `gzip` и запускается перед `S97quasar`.
+Если на колонке уже есть HTTPS-клиент, тот же скачанный `install.sh` можно
+запустить прямо на ней без аргумента SSH-адреса. Ниже — вариант для
 локальной сборки, ограниченного доступа колонки к GitHub или установки конкретного выпуска.
 На компьютере скачайте `.tar.gz` и `.tar.gz.sha256` из одного выпуска либо соберите их командами выше.
 Для ARMv7 замените `arm64` на `armv7`:
@@ -501,7 +506,7 @@ ssh root@SPEAKER_IP
 
 ```sh
 stage=$(mktemp -d /data/quasar-bridge-install.XXXXXX)
-tar -xzf /data/quasar-bridge-linux-arm64.tar.gz -C "$stage"
+gzip -dc /data/quasar-bridge-linux-arm64.tar.gz | tar -xf - -C "$stage"
 sh "$stage/setup.sh"
 ```
 
@@ -524,7 +529,7 @@ sh "$stage/setup.sh"
 - `/data/opt/quasar-bridge/config.json`, `runtime.env` — настройки и секреты.
 - `/data/opt/quasar-bridge/endpoint-backup.json` — исходные endpoint Алисы.
 - `/data/opt/quasar-bridge/service.log` — stdout/stderr программы.
-- `/etc/init.d/S98quasar-bridge` — собственный автозапуск, перед `S99quasar`.
+- `/etc/init.d/S96quasar-bridge` — собственный автозапуск, перед `S97quasar` на MIDI и `S99quasar` на других прошивках.
 
 ```sh
 pkg=/data/opt/quasar-bridge/app

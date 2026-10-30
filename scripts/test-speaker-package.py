@@ -35,7 +35,7 @@ class PackageTest(unittest.TestCase):
                 with tarfile.open(output) as archive:
                     self.assertEqual(set(archive.getnames()), {
                         "bin/quasar-bridge", "start.sh", "control.sh", "install.sh",
-                        "uninstall.sh", "setup.sh", "S98quasar-bridge", "firmware.sh",
+                        "uninstall.sh", "setup.sh", "S96quasar-bridge", "firmware.sh",
                         "config.device.example.json", "ARCH", "VERSION",
                         "LICENSE", "NOTICE", "THIRD_PARTY_NOTICES",
                     })
@@ -129,14 +129,14 @@ class InstallationTest(unittest.TestCase):
         self.control("stop")
         # Persistent state can contain a service lock left by an older boot.
         (self.state / ".service-lock").mkdir()
-        self.run_script(self.init / "S98quasar-bridge", "start")
+        self.run_script(self.init / "S96quasar-bridge", "start")
         self.control("status")
         self.run_script(self.state / "app/uninstall.sh", ok=False)
         self.control("status")
         backup.unlink()  # Simulate a completed endpoint rollback/reboot.
         self.run_script(self.state / "app/uninstall.sh")
         self.assertFalse((self.state / "app").exists())
-        self.assertFalse((self.init / "S98quasar-bridge").exists())
+        self.assertFalse((self.init / "S96quasar-bridge").exists())
         self.assertTrue(config.exists())
         self.assertTrue(runtime.exists())
 
@@ -152,6 +152,17 @@ class InstallationTest(unittest.TestCase):
         config.write_text(original)
         self.control("status")
 
+    def test_init_starts_bridge_before_midi_quasar(self):
+        self.install()
+        self.control("stop")
+        (self.init / "S97quasar").write_text(
+            '#!/bin/sh\nwget -q -T 2 -O /dev/null http://127.0.0.1:8443/healthz\n')
+        result = subprocess.run([
+            "sh", "-ec", 'for hook in "$1"/S??*; do sh "$hook" start; done', "sh", str(self.init),
+        ], env=self.env, capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.control("status")
+
     def test_failed_update_restores_previous_binary_and_service(self):
         self.install()
         original = (self.state / "app/bin/quasar-bridge").read_bytes()
@@ -165,7 +176,7 @@ class InstallationTest(unittest.TestCase):
 
     def test_hook_write_failure_restores_read_only_mount_and_previous_service(self):
         self.install()
-        original_hook = (self.init / "S98quasar-bridge").read_text()
+        original_hook = (self.init / "S96quasar-bridge").read_text()
         shim = self.root / "shim"
         shim.mkdir(exist_ok=True)
         (shim / "awk").write_text('#!/bin/sh\nexit 0\n')  # Simulate a read-only root.
@@ -175,10 +186,10 @@ class InstallationTest(unittest.TestCase):
         self.env["PATH"] = str(shim) + os.pathsep + self.env["PATH"]
         trace = self.root / "mount-trace"
         self.env["QUASAR_MOUNT_TRACE"] = str(trace)
-        (self.init / "S98quasar-bridge.new").mkdir()  # Force publication to fail after start.
+        (self.init / "S96quasar-bridge.new").mkdir()  # Force publication to fail after start.
         self.install(ok=False)
         self.control("status")
-        self.assertEqual((self.init / "S98quasar-bridge").read_text(), original_hook)
+        self.assertEqual((self.init / "S96quasar-bridge").read_text(), original_hook)
         self.assertEqual(trace.read_text().splitlines(), ["-o remount,rw /", "-o remount,ro /"])
         self.assertFalse((self.state / ".install-lock").exists())
 
@@ -295,8 +306,28 @@ class InstallationTest(unittest.TestCase):
         ], text=True)
         self.assertEqual(restored_key, key)
         original = env_file.read_bytes()
-        self.run_script(ROOT / "install.sh", input_text="n\n")
+        # Exercise host-side download/transfer/update, replacing only SSH transport.
+        # Actual SSH authentication and TTY interaction are checked on the MIDI.
+        shim = self.root / "shim"
+        shim.mkdir(exist_ok=True)
+        ssh = shim / "ssh"
+        ssh.write_text('''#!/bin/sh
+while [ "$#" -gt 0 ]; do
+ case "$1" in
+  -o) shift 2 ;;
+  -O) exit 0 ;;
+  -n|-T|-tt) shift ;;
+  *) shift; break ;;
+ esac
+done
+exec sh -c "$*"
+''')
+        ssh.chmod(0o755)
+        self.env["PATH"] = str(shim) + os.pathsep + self.env["PATH"]
+        Path("/data").mkdir(exist_ok=True)
+        self.run_script(ROOT / "install.sh", "root@fixture", input_text="n\n")
         self.assertEqual(env_file.read_bytes(), original)
+        self.control("status")
 
     def test_setup_migrates_only_the_legacy_yam_package_and_process(self):
         self.state.mkdir()

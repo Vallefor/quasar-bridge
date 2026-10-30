@@ -29,7 +29,7 @@ jobs:
       - run: python3 scripts/test-yap.py
       - name: Check shell syntax
         run: |
-          for script in install.sh packaging/yam/*.sh packaging/yam/S98quasar-yam packaging/speaker/*.sh packaging/speaker/S98quasar-bridge; do
+          for script in install.sh packaging/yam/*.sh packaging/yam/S98quasar-yam packaging/speaker/*.sh packaging/speaker/S96quasar-bridge; do
             sh -n "$script"
           done
       - name: Test standalone installation with BusyBox
