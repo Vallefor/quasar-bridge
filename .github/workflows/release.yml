@@ -1,4 +1,4 @@
-name: release
+name: standalone release
 
 on:
   push:
@@ -54,7 +54,10 @@ jobs:
               --title "$RELEASE_TAG" --generate-notes
           fi
           # A failed upload leaves a draft that a rerun can complete.
-          gh release upload "$RELEASE_TAG" ./install.sh ./*.tar.gz ./*.tar.gz.sha256 --clobber
+          gh release upload "$RELEASE_TAG" --clobber \
+            ./install.sh \
+            ./quasar-bridge-linux-arm64.tar.gz ./quasar-bridge-linux-arm64.tar.gz.sha256 \
+            ./quasar-bridge-linux-armv7.tar.gz ./quasar-bridge-linux-armv7.tar.gz.sha256
           downloaded=$(mktemp -d)
           gh release download "$RELEASE_TAG" --dir "$downloaded" \
             --pattern '*.tar.gz' --pattern '*.tar.gz.sha256' --pattern install.sh
