@@ -324,13 +324,14 @@ exec sh -c "$*"
 ''')
         ssh.chmod(0o755)
         self.env["PATH"] = str(shim) + os.pathsep + self.env["PATH"]
-        Path("/data").mkdir(exist_ok=True)
         self.run_script(ROOT / "install.sh", "root@fixture", input_text="n\n")
         self.assertEqual(env_file.read_bytes(), original)
         self.control("status")
 
     def test_setup_migrates_only_the_legacy_yam_package_and_process(self):
-        self.state.mkdir()
+        physical_state = self.root / "physical-state"
+        physical_state.mkdir()
+        self.state.symlink_to(physical_state, target_is_directory=True)
         config = {"listen": "127.0.0.1:8443", "mode": "observe",
                   "llm_base_url": self.backend_url(), "llm_model": "fixture-model"}
         (self.state / "config.json").write_text(json.dumps(config))

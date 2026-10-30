@@ -128,12 +128,14 @@ if [ -d "$legacy" ]; then
  # No YAM API, daemon shutdown or changes to other applications.
  mv "$legacy" "$legacy_backup"
  migrated=true
+ # /data is a symlink on Station 2; /proc reports the physical executable path.
+ legacy_executable=$(CDPATH='' cd -- "$legacy_backup" && pwd -P)/bin/quasar-bridge
  for exe in /proc/[0-9]*/exe; do
-  if [ "$(readlink "$exe" 2>/dev/null)" = "$legacy_backup/bin/quasar-bridge" ]; then
+  if [ "$(readlink "$exe" 2>/dev/null)" = "$legacy_executable" ]; then
    pid=${exe%/exe}; pid=${pid##*/}
    kill "$pid"
    i=0
-   while [ "$(readlink "$exe" 2>/dev/null)" = "$legacy_backup/bin/quasar-bridge" ]; do
+   while [ "$(readlink "$exe" 2>/dev/null)" = "$legacy_executable" ]; do
     i=$((i+1))
     if [ "$i" -ge 15 ]; then echo 'Старый bridge не остановился.' >&2; exit 1; fi
     sleep 1

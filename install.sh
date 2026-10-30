@@ -53,9 +53,10 @@ host_install() (
   else shasum -a 256 -c "$archive.sha256"
   fi
  )
- remote_stage=$(ssh -n "$@" "$target" 'umask 077; mktemp -d /data/quasar-bridge-install.XXXXXX')
+ # Keep the compressed archive and extraction off the small persistent data volume.
+ remote_stage=$(ssh -n "$@" "$target" 'umask 077; mktemp -d /tmp/quasar-bridge-install.XXXXXX')
  case "$remote_stage" in
-  /data/quasar-bridge-install.*) ;;
+  /tmp/quasar-bridge-install.*) ;;
   *) echo 'Колонка не вернула каталог установки.' >&2; remote_stage=; exit 1 ;;
  esac
  case "$remote_stage" in
