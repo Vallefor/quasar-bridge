@@ -271,6 +271,113 @@ func TestUnknownToHome(t *testing.T) {
 	}
 }
 
+func TestTimerRemainingGoesToYandex(t *testing.T) {
+	cfg := DefaultRoutingConfig()
+	cfg.UnknownToHome = true
+	e := &Engine{Home: homeFunc(func(context.Context, string) (string, error) { return "ok", nil }), LLM: completionFunc(func(context.Context, []llm.Message, bool) (string, error) {
+		return "модель", nil
+	})}
+	if err := e.SetRouting(cfg); err != nil {
+		t.Fatal(err)
+	}
+	for _, text := range []string{
+		"Сколько осталось",
+		"Сколько осталось?",
+		"Алиса, сколько осталось",
+		"Алиса, пожалуйста, сколько осталось!",
+		"сколько ещё",
+		"Сколько ещё?",
+		"сколько еще осталось",
+		"сколько осталось ещё",
+		"сколько времени осталось",
+		"сколько осталось времени",
+		"сколько минут осталось",
+		"сколько осталось минут",
+		"сколько секунд осталось",
+		"сколько осталось секунд",
+		"сколько часов осталось",
+		"сколько там осталось",
+		"сколько осталось на таймере",
+		"сколько ещё на таймере",
+		"сколько на таймере",
+		"сколько времени на таймере",
+		"сколько минут на таймере",
+		"сколько осталось до таймера",
+		"сколько до таймера",
+		"сколько до конца",
+		"сколько осталось до конца",
+		"сколько до конца таймера",
+		"сколько осталось до конца таймера",
+		"сколько осталось до звонка",
+		"сколько до сигнала",
+		"сколько осталось до сигнала",
+		"сколько до срабатывания",
+		"сколько таймеру осталось",
+		"сколько осталось таймеру",
+		"когда сработает таймер",
+		"когда прозвенит таймер",
+		"когда зазвонит таймер",
+		"через сколько таймер",
+		"через сколько сработает",
+		"через сколько сработает таймер",
+		"через сколько минут сработает таймер",
+		"осталось сколько",
+		"осталось сколько времени",
+		"таймер, сколько осталось",
+		"на сколько ещё",
+		"на сколько осталось",
+		"на сколько ещё осталось",
+		"скажи сколько осталось",
+		"скажите, сколько осталось",
+		"подскажи сколько ещё",
+		"ну сколько осталось",
+		"а сколько ещё осталось времени",
+		"сколько ещё осталось времени",
+		"сколько времени ещё осталось",
+		"Сколько осталось на таймерах?",
+		"сколько осталось, пожалуйста",
+	} {
+		got := e.Decide(t.Context(), text)
+		if got.Route != "yandex" || got.Rule != "timer_remaining" || got.Source != "rule" {
+			t.Errorf("%q: %+v", text, got)
+		}
+	}
+	for _, text := range []string{
+		"сколько осталось молока",
+		"сколько осталось денег",
+		"сколько осталось до зарплаты",
+		"сколько осталось места на диске",
+		"расскажи сколько осталось",
+		"через сколько автобус",
+		"сколько минут в часе",
+		"сколько еще будет",
+		"на сколько евро",
+		"что такое таймер",
+	} {
+		got := e.Decide(t.Context(), text)
+		if got.Rule == "timer_remaining" || got.Route == "yandex" {
+			t.Errorf("not a timer question %q: %+v", text, got)
+		}
+	}
+	for _, tc := range []struct{ text, rule string }{
+		{"поставь таймер на 5 минут", "yandex_services"},
+		{"продолжи таймер", "yandex_services"},
+		{"сколько осталось до будильника", "yandex_services"},
+		{"когда сработает будильник", "yandex_services"},
+	} {
+		got := e.Decide(t.Context(), tc.text)
+		if got.Route != "yandex" || got.Rule != tc.rule || got.Source != "rule" {
+			t.Errorf("%q: %+v", tc.text, got)
+		}
+	}
+	if _, err := e.Resolve(t.Context(), "напиши код сортировки"); err != nil {
+		t.Fatal(err)
+	}
+	if got := e.Decide(t.Context(), "а сколько осталось"); got.Route != "yandex" || got.Rule != "timer_remaining" || got.Source != "rule" {
+		t.Fatal("timer question followed the local dialogue", got)
+	}
+}
+
 func TestStopPhraseDropsTheWholeUtterance(t *testing.T) {
 	var homeCalls, llmCalls int
 	cfg := DefaultRoutingConfig()

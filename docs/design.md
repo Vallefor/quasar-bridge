@@ -118,9 +118,13 @@ multiactivation flag, not the phrase. Values outside 0–5000 are rejected.
 Ruling: `routing.unknown_to_home` defaults to false. When true, text that
 matches no rule goes to home without the classifier. Phrases that ask the
 neural net go to home even if a rule chose llm. Timer phrases that a rule
-would send to Yandex go to home, except «таймер на …» and a timer control
-such as resume, pause, cancel, or delete, which stay on Yandex.
-Alarm phrases stay on Yandex. An explicit home rule, weather, music,
+would send to Yandex go to home, except «таймер на …», a timer control
+such as resume, pause, cancel, or delete, and one short question about time
+left on the timer, which stay on Yandex. That question is the whole utterance:
+«сколько осталось», «сколько ещё», «сколько времени осталось», «сколько минут
+осталось», «сколько осталось на таймере», «сколько до конца», «когда сработает
+таймер», «через сколько таймер», and the same shape. A longer sentence does
+not match. Alarm phrases stay on Yandex. An explicit home rule, weather, music,
 clock questions, dialogue history, page reading, code requests, and an open
 local follow-up stay on their existing routes. The decision source is
 `unknown`. SIGHUP reloads the flag with the rest of routing.
